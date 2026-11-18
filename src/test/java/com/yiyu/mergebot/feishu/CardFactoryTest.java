@@ -100,6 +100,32 @@ class CardFactoryTest {
     }
 
     @Test
+    @DisplayName("恢复待审批卡不丢东西：最近提交、两个按钮、自动检查、跳转按钮、灰字链接都在")
+    void restoredApprovalCardKeepsEverything() throws Exception {
+        String json = factory.approvalCardFromCallback("proj", "5425167", "36",
+                mr("TO_BE_MERGED", "修复订单导出超时"), COMMIT, "https://codeup.aliyun.com/x");
+
+        assertTrue(json.contains("待审批 · 修复订单导出超时"));
+        assertTrue(json.contains("最近提交"), "取消/重试后提交内容不能消失");
+        assertTrue(json.contains(COMMIT));
+        assertTrue(json.contains("合并到 test"), "合并按钮还在");
+        assertTrue(json.contains("拒绝"), "拒绝按钮还在");
+        assertTrue(json.contains("机器人自动检查"));
+        assertTrue(json.contains("在云效打开"), "跳转按钮还在");
+        assertTrue(json.contains("云效链接（长按可复制）"));
+        assertTrue(json.contains("\"url\":\"https://codeup.aliyun.com/x\""), "按钮值继续透传链接");
+        assertTrue(json.contains("23a64ce8"), "按钮值继续透传最近提交");
+    }
+
+    @Test
+    @DisplayName("没有提交内容时不渲染空的「最近提交」块")
+    void noGhostCommitBlock() throws Exception {
+        String json = factory.approvalCardFromCallback("proj", "5425167", "36",
+                mr("TO_BE_MERGED", "改动 A"), "", "https://codeup.aliyun.com/x");
+        assertFalse(json.contains("最近提交"));
+    }
+
+    @Test
     @DisplayName("头部截断按显示宽度算：英文项目名完整保留，超长中文标题才截")
     void headerTruncatesByWidth() throws Exception {
         // 25 个半角字符（宽度 25），按宽度 38 应该完整放下

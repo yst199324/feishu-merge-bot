@@ -193,9 +193,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         audit.title(mr.getTitle()).branches(mr.branchText());
         audit.step("取消合并", "卡片回到待审批");
         auditLog.write(audit.result("已取消", "卡片回到待审批状态，云效没有变更"));
-        setCard(resp, cardFactory.approvalCard(repoName, repoId, localId, mr,
-                yunxiao.commitsFor(repoId, mr.getSourceBranch(), mr.getTargetBranch()),
-                resultUrl(audit, repoName, localId, mr)));
+        setCard(resp, cardFactory.approvalCardFromCallback(repoName, repoId, localId, mr,
+                audit.getLatestCommit(), resultUrl(audit, repoName, localId, mr)));
         resp.setToast(toast("info", "已取消"));
         return resp;
     }
@@ -421,9 +420,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             auditLog.write(audit);
             audit.stepFail("幂等校验", "重复点击，但当前状态仍是 " + blank(mr.getStatus(), "未知")
                     + "，已恢复待审批卡片供重试");
-            setCard(resp, cardFactory.approvalCard(audit.getProject(), repoId, localId, mr,
-                    yunxiao.commitsFor(repoId, mr.getSourceBranch(), mr.getTargetBranch()),
-                    resultUrl(audit, audit.getProject(), localId, mr)));
+            setCard(resp, cardFactory.approvalCardFromCallback(audit.getProject(), repoId, localId, mr,
+                    audit.getLatestCommit(), resultUrl(audit, audit.getProject(), localId, mr)));
             resp.setToast(toast("info", "上次操作没有生效，已恢复卡片，可以重新点"));
             return resp;
         }

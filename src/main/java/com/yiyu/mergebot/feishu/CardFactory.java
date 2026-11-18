@@ -51,6 +51,33 @@ public class CardFactory {
      */
     public String approvalCard(String repoName, String repoId, String localId, MrView mr,
                                List<CommitItem> commits, String webUrl, boolean latestOnly) {
+        // 最近一条提交。Webhook 入口传进来的就是报文里的 last_commit（只有一条），**不额外调云效接口**；
+        // 把这一行塞进按钮值，结果卡替换原卡片时才能原样保留。
+        List<CommitItem> list = commits == null ? new ArrayList<>() : commits;
+        String commitBlock = list.isEmpty() ? ""
+                : commitsBlock(list, mr == null ? 0 : mr.getAhead(), latestOnly);
+        return approvalCardBody(repoName, repoId, localId, mr,
+                commitBlock, latestCommitLine(list), webUrl);
+    }
+
+    /**
+     * 用按钮带回来的「最近提交」文本恢复待审批卡。
+     *
+     * 点「取消」、或重复点击发现上次没生效时，服务端手里只有这一行文本，没有完整提交列表。
+     * **不能为此再调一次云效接口**：一来多余，二来接口一失败，
+     * 恢复出来的卡片就会凭空少一段提交内容——用户看到的就是"点了一下卡片变简单了"。
+     */
+    public String approvalCardFromCallback(String repoName, String repoId, String localId,
+                                           MrView mr, String commitLine, String webUrl) {
+        String line = commitLine == null ? "" : commitLine;
+        String block = line.isEmpty() ? ""
+                : "<font color='grey'>最近提交</font>\n" + esc(line);
+        return approvalCardBody(repoName, repoId, localId, mr, block, line, webUrl);
+    }
+
+    /** 两种来源共用同一套卡片骨架，避免各写一份导致"恢复后的卡片和原卡片不一样" */
+    private String approvalCardBody(String repoName, String repoId, String localId, MrView mr,
+                                    String commitBlock, String commitLine, String webUrl) {
         List<Object> elements = new ArrayList<>();
         elements.add(markdown(summary(repoName, repoId, localId, mr)));
 
@@ -60,14 +87,10 @@ public class CardFactory {
         if (!desc.isEmpty()) {
             elements.add(markdown("<font color='grey'>说明</font>\n" + esc(desc)));
         }
-
-        // 最近一条提交。Webhook 入口传进来的就是报文里的 last_commit（只有一条），
-        // **不额外调云效接口**；把这一行塞进按钮值，结果卡替换原卡片时才能原样保留。
-        List<CommitItem> list = commits == null ? new ArrayList<>() : commits;
-        if (!list.isEmpty()) {
-            elements.add(markdown(commitsBlock(list, mr == null ? 0 : mr.getAhead(), latestOnly)));
+        if (!commitBlock.isEmpty()) {
+            elements.add(markdown(commitBlock));
         }
-        String commitLine = latestCommitLine(list);
+
         // 链接优先用 Webhook 报文里云效自己给的（调用方已经解析好传进来），
         // 拿不到才回落到详情接口/本地拼接。提前算好，因为还要塞进按钮值给结果卡用
         String url = blank(webUrl, mr == null ? "" : blank(mr.getDetailUrl(), ""));
@@ -104,16 +127,9 @@ public class CardFactory {
             elements.add(markdown("<font color='grey'>云效链接（长按可复制）：" + esc(url) + "</font>"));
         }
 
-        // 标题放 header 大字位置。
-        //
-        // 为什么不是把项目名放 header：群消息列表只显示这一行，
-        // 而"这次要合的是什么改动"（标题）比"哪个仓库"更决定要不要点开。
-        // 项目名移到正文第一行，点开就看见，多个项目共群也不会混。
-        // 前面加「待审批 ·」是为了在一堆卡片里一眼看出哪张还没处理。
         String mrTitle = mr == null ? "" : blank(mr.getTitle(), "");
         String headTitle = headOf("待审批", mrTitle, repoName);
         if ("待审批".equals(headTitle)) {
-            // 标题和项目名都是空的，给个能看懂的兜底
             headTitle = "合并请求待审批";
         }
 
@@ -351,8 +367,11 @@ public class CardFactory {
             return "";
         }
         CommitItem c = commits.get(0);
-        return blank(c.getShortId(), "") + "　" + blank(c.getMessage(), "")
-                + "　" + blank(c.getAuthor(), "");
+        String line = (blank(c.getShortId(), "") + "　" + blank(c.getMessage(), "")
+                + "　" + blank(c.getAuthor(), "")).trim();
+        // 三个字段都空时会拼出两个全角空格，绝不能当成"有提交"塞进卡片，
+        // 否则会渲染出一行「最近提交」下面只有空格的怪东西
+        return line.replace("\u3000", "").trim().isEmpty() ? "" : line;
     }
 
     /**
