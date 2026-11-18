@@ -48,6 +48,8 @@ class CardFactoryTest {
         assertTrue(json.contains("最近提交"), "结果卡要保留最近提交");
         assertTrue(json.contains(COMMIT));
         assertTrue(json.contains("处理：杨书庭（676706）"), "要有处理人和时间");
+        assertTrue(json.contains("分支：<font color='blue'>**dev订单**</font> → <font color='green'>**test**</font>"),
+                "源分支蓝、目标分支绿，都加粗");
         assertTrue(json.contains("去云效查看"), "跳转按钮不能丢");
         assertTrue(json.contains("云效链接（长按可复制）"), "URL 放底部灰字");
     }
@@ -92,6 +94,8 @@ class CardFactoryTest {
 
         assertTrue(json.contains("待审批 · 修复订单导出超时"));
         assertTrue(json.contains("\"template\":\"blue\""), "待审批用蓝色（待办）");
+        assertTrue(json.contains("分支：<font color='blue'>**dev订单**</font> → <font color='green'>**test**</font>"));
+        assertFalse(json.contains("合并到 "), "按钮只写「合并」");
         assertFalse(json.contains("合并请求：https"), "正文那行明文 URL 已经去掉");
         assertTrue(json.contains("云效链接（长按可复制）：https://codeup.aliyun.com/x"), "底部灰字保留可复制链接");
         assertTrue(json.contains("23a64ce8"), "按钮值里带上最近提交，供结果卡透传");
@@ -108,7 +112,8 @@ class CardFactoryTest {
         assertTrue(json.contains("待审批 · 修复订单导出超时"));
         assertTrue(json.contains("最近提交"), "取消/重试后提交内容不能消失");
         assertTrue(json.contains(COMMIT));
-        assertTrue(json.contains("合并到 test"), "合并按钮还在");
+        assertTrue(json.contains("合并"), "合并按钮还在");
+        assertFalse(json.contains("合并到 "), "按钮不再带分支名，长分支名不会挤坏并排布局");
         assertTrue(json.contains("拒绝"), "拒绝按钮还在");
         assertTrue(json.contains("机器人自动检查"));
         assertTrue(json.contains("在云效打开"), "跳转按钮还在");

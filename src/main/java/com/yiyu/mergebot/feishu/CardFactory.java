@@ -100,8 +100,7 @@ public class CardFactory {
         Map<String, Object> mergeValue = value("merge", repoName, repoId, localId, commitLine, url);
         Map<String, Object> closeValue = value("close", repoName, repoId, localId, commitLine, url);
 
-        Map<String, Object> mergeBtn = button("合并到 " + blank(mr.getTargetBranch(), "未知分支"),
-                canMerge ? "primary" : "default", mergeValue);
+        Map<String, Object> mergeBtn = button("合并", canMerge ? "primary" : "default", mergeValue);
         if (!canMerge) {
             mergeBtn.put("disabled", true);
             mergeBtn.put("disabled_tips", plain("存在冲突或卡点未通过，不能合并。点拒绝或让提交人处理"));
@@ -193,8 +192,7 @@ public class CardFactory {
         elements.add(markdown("**确认要把这个合并请求合进 "
                 + esc(blank(mr.getTargetBranch(), "目标分支")) + " 吗？**\n"
                 + "项目：" + esc(blank(repoName, "repoId=" + repoId)) + "\n"
-                + "分支：" + esc(blank(mr.getSourceBranch(), "未知"))
-                + " → **" + esc(blank(mr.getTargetBranch(), "未知")) + "**\n"
+                + branchLine(mr) + "\n"
                 + "发起人：" + esc(blank(mr.getAuthorName(), "未知")) + "\n"
                 + "发起时间：" + esc(formatTime(mr.getCreatedAt()))));
 
@@ -251,8 +249,7 @@ public class CardFactory {
 
         sb.append("项目：").append(esc(blank(repoName, "未知"))).append("\n");
         if (mr != null) {
-            sb.append("分支：").append(esc(blank(mr.getSourceBranch(), "未知")))
-                    .append(" → **").append(esc(blank(mr.getTargetBranch(), "未知"))).append("**\n");
+            sb.append(branchLine(mr)).append("\n");
             // 发起时间和发起人并一行，省一行版面
             sb.append("发起人：").append(esc(blank(mr.getAuthorName(), "未知")))
                     .append(" · ").append(esc(shortTime(mr.getCreatedAt()))).append("\n");
@@ -383,10 +380,21 @@ public class CardFactory {
      *
      * 分支单独占一行、用箭头连起来，别拆成两行——拆开后看不出"谁合到谁"。
      */
+    /**
+     * 分支行，三类卡片共用：源分支蓝色、目标分支绿色，**都加粗**。
+     *
+     * 颜色表示"方向"：蓝=从哪来，绿=合到哪去，一眼看出箭头两头不是同一个东西。
+     * 必须连在一行、用箭头接起来——拆成两行就看不出"谁合到谁"。
+     */
+    private String branchLine(MrView mr) {
+        return "分支：<font color='blue'>**" + esc(blank(mr.getSourceBranch(), "未知"))
+                + "**</font> → <font color='green'>**"
+                + esc(blank(mr.getTargetBranch(), "未知")) + "**</font>";
+    }
+
     private String summary(String repoName, String repoId, String localId, MrView mr) {
         return "项目：" + esc(blank(repoName, "repoId=" + repoId)) + "\n"
-                + "分支：" + esc(blank(mr.getSourceBranch(), "未知"))
-                + " → **" + esc(blank(mr.getTargetBranch(), "未知")) + "**\n"
+                + branchLine(mr) + "\n"
                 + "发起人：" + esc(blank(mr.getAuthorName(), "未知")) + "\n"
                 + "发起时间：" + esc(formatTime(mr.getCreatedAt())) + "\n"
                 + "编号：" + esc(localId) + "　状态：" + esc(mr.getStatus());
