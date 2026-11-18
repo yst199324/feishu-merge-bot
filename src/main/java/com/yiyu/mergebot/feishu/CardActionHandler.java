@@ -286,8 +286,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         auditLog.write(audit);
         resp.setToast(toast("success", "已合并"));
         setCard(resp, cardFactory.resultCard(repoName, latest.getTitle(), ResultKind.MERGED, operator,
-                "已合并进 " + latest.getTargetBranch(), latest, latest.getDetailUrl(),
-                audit.getLatestCommit()));
+                "已合并进 " + latest.getTargetBranch(), latest,
+                yunxiao.webUrlFor(repoName, localId, latest), audit.getLatestCommit()));
         return resp;
     }
 
@@ -360,7 +360,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             auditLog.write(audit);
             resp.setToast(toast("success", "已拒绝"));
             setCard(resp, cardFactory.resultCard(repoName, mr.getTitle(), ResultKind.CLOSED, operator,
-                    "已拒绝（关闭）该合并请求", after, mr.getDetailUrl(), audit.getLatestCommit()));
+                    "已拒绝（关闭）该合并请求", after,
+                    yunxiao.webUrlFor(repoName, localId, mr), audit.getLatestCommit()));
             return resp;
         } catch (YunxiaoException e) {
             audit.stepError(step, rootMessage(e), e);
@@ -432,8 +433,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
 
         resp.setToast(toast("success", "这个请求已经" + kind.getLabel() + "了"));
         setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), kind, operator,
-                merging ? "已经合并进 " + target : "已经拒绝（关闭）", mr, mr.getDetailUrl(),
-                audit.getLatestCommit()));
+                merging ? "已经合并进 " + target : "已经拒绝（关闭）", mr,
+                yunxiao.webUrlFor(audit.getProject(), localId, mr), audit.getLatestCommit()));
         return resp;
     }
 
@@ -453,7 +454,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
 
         resp.setToast(toast("error", message));
         setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), ResultKind.FAILED,
-                audit.getOperator(), message, mr, mr.getDetailUrl(), audit.getLatestCommit()));
+                audit.getOperator(), message, mr,
+                yunxiao.webUrlFor(audit.getProject(), audit.getMrId(), mr), audit.getLatestCommit()));
         return resp;
     }
 

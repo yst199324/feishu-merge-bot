@@ -213,12 +213,14 @@ public class CardFactory {
         List<Object> elements = new ArrayList<>();
 
         StringBuilder sb = new StringBuilder();
-        // 结果行放最前面：打开卡片第一眼要看的是"成没成、合到哪"
-        sb.append("**<font color='").append(kind.getColor()).append("'>")
+        // 结果行放最前面。加「结果：」标签是有意的：不带标签时，
+        // 一行彩色加粗的字容易被误读成标题，而它其实是操作结论。
+        // 值保留加粗 + 按状态着色，标签本身用普通字重。
+        sb.append("结果：**<font color='").append(kind.getColor()).append("'>")
                 .append(esc(message)).append("</font>**\n");
         // 完整标题，**不截断**——header 那行放不下是必然的，正文就是用来看全的
         if (!blank(taskTitle, "").isEmpty()) {
-            sb.append("**").append(esc(taskTitle)).append("**\n");
+            sb.append("标题：**").append(esc(taskTitle)).append("**\n");
         }
         // 最近提交紧跟标题下一行。用的是 Webhook 报文里的 last_commit，
         // 由按钮值透传过来，**不额外调云效接口**（合并后源分支可能已删，也查不到）

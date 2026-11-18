@@ -43,11 +43,12 @@ class CardFactoryTest {
 
         assertTrue(json.contains("已合并 · 修复订单导出超时"), "header 必须带标题，否则群列表看不出是哪条");
         assertTrue(json.contains("\"template\":\"green\""), "已合并用绿色");
-        assertTrue(json.contains("<font color='green'>已合并进 test</font>"), "结果行要着色");
-        assertTrue(json.contains("**修复订单导出超时**"), "正文要有完整标题");
+        assertTrue(json.contains("结果：**<font color='green'>已合并进 test</font>**"), "结果要带标签且着色");
+        assertTrue(json.contains("标题：**修复订单导出超时**"), "标题要带标签且完整");
         assertTrue(json.contains("最近提交"), "结果卡要保留最近提交");
         assertTrue(json.contains(COMMIT));
         assertTrue(json.contains("处理：杨书庭（676706）"), "要有处理人和时间");
+        assertTrue(json.contains("去云效查看"), "跳转按钮不能丢");
         assertTrue(json.contains("云效链接（长按可复制）"), "URL 放底部灰字");
     }
 
