@@ -29,22 +29,23 @@ public class PollProperties {
     private long intervalMs = 60_000;
 
     /**
-     * 要监控的仓库 ID 列表。不是仓库名，是 URL 里那串数字。
+     * 要监控的仓库 ID 列表。不是仓库名，是那串数字。
      *
-     * 从哪拿：打开云效任意一个合并请求，URL 形如
-     *   .../repositories/2813489/changeRequests/12
-     * 中间那串数字就是仓库 ID。
+     * 从哪拿：新版云效页面已经不显示仓库 ID 了，用服务自带的排错接口反查（需要
+     * `mergebot.test-endpoints=true`）：
+     *   curl "127.0.0.1:18123/test/repos?path=组名/仓库名"
+     * 或者看云效 Webhook 报文里的 project_id。
      */
     private List<String> repoIds = new ArrayList<>();
 
     /**
      * 只关心合到这些目标分支的请求。
      *
-     * 不填等于全部。填 ["test"] 就只处理合到 test 的，
-     * 合到 prod / master 的完全不理——那些本来也不该在周末随手点。
+     * 不填 = 全部都要。填 ["test"] 就只处理合到 test 的。
      *
-     * 注意：这个过滤依赖云效列表接口返回 targetBranch 字段。
-     * 万一某个版本没返回，代码会"放行"而不是"丢弃"，宁可多发一张卡也不漏。
+     * 注意这个过滤依赖接口返回目标分支字段：**字段缺失时按"放行"处理**，
+     * 宁可多发一张卡，也不因为字段缺失把真请求漏掉。
+     * 所以它是"减少打扰"的过滤器，不是安全边界——真正要不要合由人看卡片决定。
      */
     private List<String> targetBranches = new ArrayList<>();
 

@@ -35,10 +35,12 @@ import java.util.Map;
  *
  * 典型用法：
  *  1. 启动服务，控制台看到"已连接飞书长连接"；
- *  2. 浏览器打开 http://localhost:8081/test/chats 找到群 chat_id，填进 application.yml；
- *  3. 打开 http://localhost:8081/test/card 发一张测试卡片；
+ *  2. 浏览器打开 http://localhost:18123/test/chats 找到群 chat_id，填进 application.yml；
+ *  3. 打开 http://localhost:18123/test/card 发一张测试卡片；
  *  4. 在飞书里点"合并"，看服务端日志有没有打出"收到卡片回调"。
  *     有日志 = 长连接和回调都通了，剩下就是云效参数的问题。
+ *
+ * 端口按部署实际值 18123 写；本地改了 server.port 就换成自己的。
  */
 @Slf4j
 @RestController

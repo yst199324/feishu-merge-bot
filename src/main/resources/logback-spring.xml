@@ -123,7 +123,9 @@
     </appender>
 
     <!-- ============================= 异步 ============================= -->
-    <!-- discardingThreshold=0：队列满 20% 就开始丢 INFO 以下的，保证 WARN/ERROR 一定落盘 -->
+    <!-- discardingThreshold=0 表示**永不因为队列满而丢日志**（默认值是队列容量的 1/5）。
+         配合 neverBlock=true：队列真的满了就丢弃新事件、绝不阻塞业务线程。
+         注意别把这个 0 理解成"丢 20%"，正好相反。 -->
     <appender name="async-debug-appender" class="ch.qos.logback.classic.AsyncAppender">
         <queueSize>1024</queueSize>
         <discardingThreshold>0</discardingThreshold>
@@ -160,8 +162,9 @@
     <logger name="com.lark.oapi" level="INFO"/>
     <logger name="com.aliyun" level="INFO"/>
 
-    <!-- 自己的代码开 DEBUG：一次点击走了哪些校验分支，都要能看到 -->
-    <logger name="com.yiyu.mergebot" level="DEBUG"/>
+    <!-- 自己的代码默认 INFO。排查"点了按钮没反应"这类问题时临时改成 DEBUG，
+         能看到每道校验走了哪个分支（这里优先级高于 application.yml 的 logging.level） -->
+    <logger name="com.yiyu.mergebot" level="INFO"/>
 
     <root level="INFO">
         <appender-ref ref="consoleAppender"/>

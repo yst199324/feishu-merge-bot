@@ -63,7 +63,7 @@ public class MergeRequestPoller {
 
     @Scheduled(initialDelay = 15_000, fixedDelayString = "${mergebot.poll.interval-ms:60000}")
     public void scan() {
-        if (poll.getRepoIds().isEmpty()) {
+        if (poll.getRepoIds() == null || poll.getRepoIds().isEmpty()) {
             log.warn("轮询已开启，但 mergebot.poll.repo-ids 是空的，什么都不会做。请填仓库 ID（URL 里那串数字）");
             return;
         }
@@ -73,19 +73,30 @@ public class MergeRequestPoller {
         }
 
         Set<String> seen = new HashSet<>();
+        // 本轮查询成功的仓库。只有这些仓库的发送记录才允许被清理——
+        // 查询失败时 seen 里没有该仓库的任何 key，如果直接按 seen 清理，
+        // 会把它之前所有"已发过卡片"的记录一次抹掉，下一轮接口恢复时整个仓库重发一遍卡。
+        Set<String> queriedOk = new HashSet<>();
 
         for (String repoId : poll.getRepoIds()) {
             try {
                 scanRepo(repoId, seen);
+                queriedOk.add(repoId);
             } catch (Exception e) {
                 // 单个仓库失败不能中断整轮，否则一个仓库 ID 写错就全都不工作了
-                log.error("轮询仓库 {} 失败：{}", repoId, e.getMessage(), e);
+                log.error("轮询仓库 {} 失败：{}（本轮不清理它的发送记录，避免下轮重复发卡）",
+                        repoId, e.getMessage(), e);
             }
         }
 
-        // 已经从列表里消失的（已合并/已关闭）不再占位，清理掉，
-        // 这样同一个合并请求将来被重新打开时还能再发一张卡
-        lastSent.keySet().retainAll(seen);
+        // 已经不在待合并列表里的（已合并/已关闭）不再占位，清理掉，
+        // 这样同一个合并请求将来被重新打开时还能再发一张卡。
+        // 注意只清理本轮真正查成功的仓库。
+        lastSent.keySet().removeIf(key -> {
+            int sep = key.indexOf(':');
+            String repo = sep > 0 ? key.substring(0, sep) : "";
+            return queriedOk.contains(repo) && !seen.contains(key);
+        });
     }
 
     private void scanRepo(String repoId, Set<String> seen) {
@@ -97,25 +108,25 @@ public class MergeRequestPoller {
             String key = repoId + ":" + item.getLocalId();
             seen.add(key);
 
-            MrView brief = item.getMr();
-
-            if (!targetMatched(brief.getTargetBranch())) {
-                continue;
-            }
-
-            String fingerprint = item.fingerprint();
-            if (fingerprint.equals(lastSent.get(key))) {
-                continue;   // 没变化，不重复打扰
-            }
-
-            // 列表接口带不带 allRequirementsPass / conflictCheckStatus 不确定，
-            // 发卡片前补一次详情，让按钮能不能点、为什么不能点一次判断准确
-            MrView full = brief;
+            // 详情先查，再算指纹、再做分支过滤。
+            // 原因：列表接口的 ahead / behind / updatedAt 经常是缺省值（0 和空串），
+            // 拿列表数据算指纹会几乎永远不变，表现就是"外包推了新提交，卡片一直不更新"。
+            // 补查一次详情，指纹才反映真实内容。待合并的请求就那么几个，多这一次查询可接受。
+            MrView full = item.getMr();
             try {
                 full = yunxiao.getChangeRequest(repoId, item.getLocalId());
             } catch (Exception e) {
                 log.warn("查合并请求详情失败，用列表数据兜底 repo={} mr={}：{}",
                         repoId, item.getLocalId(), e.getMessage());
+            }
+
+            if (!targetMatched(full.getTargetBranch())) {
+                continue;
+            }
+
+            String fingerprint = full.fingerprint();
+            if (fingerprint.equals(lastSent.get(key))) {
+                continue;   // 没变化，不重复打扰
             }
 
             try {

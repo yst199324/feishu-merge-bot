@@ -76,7 +76,8 @@ public class StartupValidator implements InitializingBean {
     private void require(String key, String value) {
         if (isPlaceholder(value)) {
             throw new IllegalStateException("配置项 [" + key + "] 未填写，服务不启动。"
-                    + "请打开 src/main/resources/application.yml 填好；"
+                    + "本地调试改 src/main/resources/application.yml；"
+                    + "服务器上改 jar 同级的 application.yml（start.sh 用的是那份）。"
                     + "其中 yunxiao.webhook-token 填任意非空字符串即可，"
                     + "但必须和云效 Webhook 配置里的 Secret Token 完全一致");
         }

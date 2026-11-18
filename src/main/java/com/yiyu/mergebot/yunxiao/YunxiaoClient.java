@@ -12,6 +12,7 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.IOException;
@@ -135,8 +136,7 @@ public class YunxiaoClient {
 
     /** 查询合并请求详情 */
     public MrView getChangeRequest(String repoId, String localId) {
-        String url = base(repoId) + "/changeRequests/" + localId;
-        return MrView.of(call(HttpMethod.GET, url, null));
+        return MrView.of(call(HttpMethod.GET, mrPath(repoId, localId), null));
     }
 
     /**
@@ -228,7 +228,7 @@ public class YunxiaoClient {
         Map<String, Object> body = new HashMap<>();
         body.put("mergeType", props.getMergeType());
         body.put("removeSourceBranch", props.isRemoveSourceBranch());
-        String url = base(repoId) + "/changeRequests/" + localId + "/merge";
+        String url = mrPath(repoId, localId) + "/merge";
         JsonNode data = call(HttpMethod.POST, url, body);
         // 有些版本合并接口返回的是操作结果而不是合并请求详情，此时补一次查询
         if (!data.has("status")) {
@@ -239,7 +239,7 @@ public class YunxiaoClient {
 
     /** 关闭（拒绝）合并请求 */
     public MrView close(String repoId, String localId) {
-        String url = base(repoId) + "/changeRequests/" + localId + "/close";
+        String url = mrPath(repoId, localId) + "/close";
         JsonNode data = call(HttpMethod.POST, url, new HashMap<String, Object>());
         if (!data.has("status")) {
             return getChangeRequest(repoId, localId);
@@ -412,11 +412,34 @@ public class YunxiaoClient {
         }
     }
 
-    private String base(String repoId) {        String root = props.getDomain() + "/oapi/v1/codeup";
-        if (StringUtils.hasText(props.getOrgId())) {
-            return root + "/organizations/" + props.getOrgId() + "/repositories/" + repoId;
+    private String base(String repoId) {
+        String root = props.getDomain() + "/oapi/v1/codeup";
+        String path = "/repositories/" + safeSegment(repoId, "仓库编号");
+        return StringUtils.hasText(props.getOrgId())
+                ? root + "/organizations/" + props.getOrgId() + path
+                : root + path;
+    }
+
+    /** 合并请求详情/操作的公共路径，顺便把编号的合法性校验收在一处 */
+    private String mrPath(String repoId, String localId) {
+        return base(repoId) + "/changeRequests/" + safeSegment(localId, "合并请求编号");
+    }
+
+    /**
+     * 路径段校验。
+     *
+     * 仓库编号和合并请求编号会被**直接拼进 URL 路径**，而它们的来源是
+     * Webhook 报文和卡片按钮参数。不校验的话，带 `../` 或 `?` 的值
+     * 能让服务拿着机器人令牌去请求同一个云效域名下的别的接口。
+     *
+     * 云效这两个值实际都是数字，这里放宽松一点（字母、数字、下划线、短横），
+     * 既能挡住注入，又不至于哪天云效换了编号格式就全线报错。
+     */
+    private String safeSegment(String value, String what) {
+        if (!StringUtils.hasText(value) || !value.matches("[A-Za-z0-9_-]+")) {
+            throw new YunxiaoException(what + "不合法，已拒绝：" + value);
         }
-        return root + "/repositories/" + repoId;
+        return value;
     }
 
     /**
@@ -442,8 +465,17 @@ public class YunxiaoClient {
         } catch (HttpStatusCodeException e) {
             throw new YunxiaoException("云效接口失败 HTTP " + e.getRawStatusCode()
                     + "，" + e.getResponseBodyAsString(), e);
+        } catch (RestClientException e) {
+            // 连接超时、读超时、DNS 失败、连接被重置都走这里。
+            // 不包装的话会冒泡成一句笼统的"处理失败"，调用方既不知道是网络问题，
+            // 也没法判断"可以重试"（按钮那边会据此撤销幂等登记）。
+            throw new YunxiaoException("云效接口调用失败（网络或超时）：" + e.getMessage(), e);
         }
-        log.debug("云效 {} {} -> {}", method, url, raw);
+        // 只记长度，不记响应全文。
+        // 响应里有提交人姓名、邮箱、合并请求说明，属于个人信息；
+        // 原来这条 debug 会把全文写进日志，等于"关了 log-webhook-raw 也没真关掉"。
+        // 真要逐字核对云效返回，用 /test/mrs-raw 那个排错接口。
+        log.debug("云效 {} {} -> {} 字节", method, url, raw == null ? 0 : raw.length());
         return unwrap(raw);
     }
 

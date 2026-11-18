@@ -5,8 +5,11 @@ server:
   # address: 127.0.0.1
 
 logging:
+  # 业务日志级别。
+  # 生产用 INFO；排查"点了按钮为什么没反应"这类问题时，临时改成 DEBUG
+  # 能看到每道校验走了哪个分支（改 logback-spring.xml 里那一行也行，那边优先级更高）。
   level:
-    com.yiyu.mergebot: DEBUG
+    com.yiyu.mergebot: INFO
 
 mergebot:
   # 排错接口（/test/*）的开关。

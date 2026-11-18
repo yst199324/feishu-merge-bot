@@ -24,12 +24,16 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * 卡片按钮点击回调处理。
  *
- * 五层校验，缺一层都会出问题：
+ * 按实际执行顺序，一共六道关，缺一层都会出问题：
  *  1. 通道层：走长连接，服务主动连出去，飞书借着这条连接推事件，不需要验签；
  *  2. 人员层：白名单 + 本群成员。卡片发在群里，不校验等于谁拿到卡片都能合代码；
- *  3. 状态层：点之前重查一次 MR。卡片可能是半小时前发的，这期间代码可能又变了；
- *  4. 幂等层：同一张卡片的同一个动作只处理一次，防重推和连点；
- *  5. 结果层：结果回写到卡片，群里所有人看到同一个结论，也不会有人再点。
+ *  3. 串行层：按合并请求加锁，同一条请求同时只允许一次操作（`MrLocks`）；
+ *  4. 幂等层：同一张卡片的同一个动作只执行一次，防飞书重推和连点；
+ *  5. 状态层：点之前重查一次 MR。卡片可能是半小时前发的，这期间代码可能又变了；
+ *  6. 结果层：结果回写到卡片，群里所有人看到同一个结论，也不会有人再点。
+ *
+ * ⚠️ 第 3 层一定在第 4 层之前。反过来的话，拿锁失败也会消耗幂等名额，
+ * 用户按提示再点一次就会被误判成"重复请求"，而实际一次都没执行。
  */
 @Slf4j
 @Component
@@ -130,20 +134,24 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
     private P2CardActionTriggerResponse doMerge(P2CardActionTriggerResponse resp, String messageId,
                                                 String operator, String repoName,
                                                 String repoId, String localId, String act) throws Exception {
-        if (!idempotent.firstTime(messageId + ":" + act)) {
-            MrView mr = yunxiao.getChangeRequest(repoId, localId);
-            resp.setToast(toast("info", "这个操作已经处理过了"));
-            setCard(resp, cardFactory.resultCard(repoName, mr.getTitle(), true, operator,
-                    "已经处理过，当前状态 " + mr.getStatus(), mr, mr.getDetailUrl()));
-            return resp;
-        }
-
+        // ★ 顺序不能动：**先拿锁，再登记幂等**。
+        // 反过来（原来就是反的）会出这种事：拿锁失败只弹一句"正在处理中"、卡片和按钮都不变，
+        // 但幂等名额已经被占掉；用户按提示再点一次，就被当成"重复请求"直接返回，
+        // 而这一次其实压根没执行。两个人同时点时最容易被当成"已经合过了"。
         ReentrantLock lock = mrLocks.of(repoId, localId);
         if (!lock.tryLock()) {
-            resp.setToast(toast("warning", "这个合并请求正在处理中，请稍候"));
+            resp.setToast(toast("warning", "这个合并请求正在处理中，请稍候再点"));
             return resp;
         }
+        String idemKey = dupKey(messageId, repoId, localId, act);
         try {
+            // 幂等层：飞书回调超时会重推，同一张卡片的同一个动作只执行一次。
+            // 命中时不能一律回"已处理"——前面那次也可能失败过，
+            // 所以按当前真实状态给结论：确实已合并才算成功。
+            if (!idempotent.firstTime(idemKey)) {
+                return alreadyHandled(resp, repoName, operator, repoId, localId, true);
+            }
+
             // 状态层：卡片可能是很久以前发的，落笔前必须重查一次
             MrView mr = yunxiao.getChangeRequest(repoId, localId);
             if (!mr.mergeable()) {
@@ -157,8 +165,13 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             }
 
             yunxiao.merge(repoId, localId);
-            // 接口返回成功不等于真合上了，再查一次确认
+            // 接口返回成功不等于真合上了，再查一次确认。
+            // 查不到就立刻再查一次（不加等待）——云效状态偶尔慢半拍，
+            // 但这里不能 sleep：飞书要求卡片回调尽快返回，拖太久会被判超时并重推。
             MrView latest = yunxiao.getChangeRequest(repoId, localId);
+            if (!"MERGED".equals(latest.getStatus())) {
+                latest = yunxiao.getChangeRequest(repoId, localId);
+            }
             if ("MERGED".equals(latest.getStatus())) {
                 resp.setToast(toast("success", "已合并"));
                 setCard(resp, cardFactory.resultCard(repoName, latest.getTitle(), true, operator,
@@ -169,6 +182,9 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             }
             return resp;
         } catch (YunxiaoException e) {
+            // 这次没成功（超时 / 网络 / 云效报错），把登记撤掉，让审批人能立刻重试。
+            // 不撤的话他会被告知"重复点击"，其实一次都没执行。
+            idempotent.forget(idemKey);
             log.error("调云效合并失败 repo={} mr={}", repoId, localId, e);
             return fail(resp, repoName, operator, safeGet(repoId, localId), "云效返回失败：" + rootMessage(e));
         } finally {
@@ -179,16 +195,17 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
     private P2CardActionTriggerResponse doClose(P2CardActionTriggerResponse resp, String messageId,
                                                 String operator, String repoName,
                                                 String repoId, String localId, String act) throws Exception {
-        if (!idempotent.firstTime(messageId + ":" + act)) {
-            resp.setToast(toast("info", "这个操作已经处理过了"));
-            return resp;
-        }
+        // 同上：先锁后幂等，顺序不能反
         ReentrantLock lock = mrLocks.of(repoId, localId);
         if (!lock.tryLock()) {
-            resp.setToast(toast("warning", "这个合并请求正在处理中，请稍候"));
+            resp.setToast(toast("warning", "这个合并请求正在处理中，请稍候再点"));
             return resp;
         }
+        String idemKey = dupKey(messageId, repoId, localId, act);
         try {
+            if (!idempotent.firstTime(idemKey)) {
+                return alreadyHandled(resp, repoName, operator, repoId, localId, false);
+            }
             MrView mr = yunxiao.getChangeRequest(repoId, localId);
             if ("CLOSED".equals(mr.getStatus()) || "MERGED".equals(mr.getStatus())) {
                 return fail(resp, repoName, operator, mr, "已经是 " + mr.getStatus() + " 状态，不能再拒绝");
@@ -200,11 +217,57 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             log.info("已拒绝 repo={} mr={} operator={}", repoId, localId, operator);
             return resp;
         } catch (YunxiaoException e) {
+            // 同上：没成功就撤销登记，允许立刻重试
+            idempotent.forget(idemKey);
             log.error("调云效关闭失败 repo={} mr={}", repoId, localId, e);
             return fail(resp, repoName, operator, safeGet(repoId, localId), "云效返回失败：" + rootMessage(e));
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * 去重键。
+     *
+     * 正常用「卡片消息编号 + 动作」，同一张卡片的同一个动作只执行一次。
+     * 消息编号缺失时（回调结构变化、转发卡片等）退化成「仓库 + 请求编号 + 动作」——
+     * **不能直接用空值拼**，否则所有请求共用同一个键，
+     * 第一个点完之后这台服务上其它所有请求都会被当成重复，再也合不了。
+     */
+    private String dupKey(String messageId, String repoId, String localId, String act) {
+        if (StringUtils.hasText(messageId)) {
+            return messageId + ":" + act;
+        }
+        log.warn("卡片回调没带消息编号，改用仓库+请求编号去重 repo={} mr={} act={}", repoId, localId, act);
+        return "nb:" + repoId + ":" + localId + ":" + act;
+    }
+
+    /**
+     * 重复点击的处理。
+     *
+     * 关键点：**结论必须按云效当前真实状态给**，不能一律报成功。
+     * 原来这里固定渲染绿色「操作成功」卡（内容是"已经处理过，当前状态 X"），
+     * 会让审批人以为合进去了，实际可能上一次根本没执行。
+     *
+     * @param merging true = 这次点的是合并；false = 点的是拒绝
+     */
+    private P2CardActionTriggerResponse alreadyHandled(P2CardActionTriggerResponse resp, String repoName,
+                                                       String operator, String repoId, String localId,
+                                                       boolean merging) throws Exception {
+        MrView mr = safeGet(repoId, localId);
+        boolean done = merging ? "MERGED".equals(mr.getStatus()) : "CLOSED".equals(mr.getStatus());
+        String target = blank(mr.getTargetBranch(), "目标分支");
+
+        resp.setToast(toast(done ? "success" : "info",
+                done ? "这个请求已经" + (merging ? "合并" : "关闭") + "完成了"
+                        : "这次点击和刚才重复，没有重复执行"));
+        setCard(resp, cardFactory.resultCard(repoName, mr.getTitle(), done, operator,
+                done ? "已经" + (merging ? "合并进 " + target : "拒绝（关闭）") + "，本次点击未重复执行"
+                        : "重复点击，未重复执行。当前状态：" + blank(mr.getStatus(), "未知"),
+                mr, mr.getDetailUrl()));
+        log.info("重复点击已忽略 repo={} mr={} operator={} 当前状态={}",
+                repoId, localId, operator, mr.getStatus());
+        return resp;
     }
 
     private P2CardActionTriggerResponse fail(P2CardActionTriggerResponse resp, String repoName,
@@ -215,11 +278,12 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         return resp;
     }
 
-    /** 查询失败时也要能出卡片，不能让异常把提示吞掉 */
+    /** 查询失败时也要能出卡片，不能让异常把提示吞掉；但失败原因要留痕，否则只会看到一张空卡片 */
     private MrView safeGet(String repoId, String localId) {
         try {
             return yunxiao.getChangeRequest(repoId, localId);
         } catch (Exception e) {
+            log.warn("查合并请求详情失败，卡片上部分字段会为空 repo={} mr={}：{}", repoId, localId, rootMessage(e));
             return MrView.of(null);
         }
     }
@@ -273,12 +337,29 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         return o == null ? "" : String.valueOf(o);
     }
 
+    private String blank(String s, String fallback) {
+        return StringUtils.hasText(s) ? s : fallback;
+    }
+
+    /**
+     * 取最根本的那句错误说明。
+     *
+     * 原来的写法是"只有当前层没有 message 时才往下找"，但包装异常通常都有 message
+     * （比如"发卡片失败: xxx"），于是永远停在最外层，真正的原因反而看不到。
+     * 这里改成一路走到最里层，取最深的一句。
+     */
     private String rootMessage(Throwable e) {
+        String deepest = null;
         Throwable t = e;
-        while (t.getCause() != null && t.getMessage() == null) {
+        while (t != null) {
+            if (StringUtils.hasText(t.getMessage())) {
+                deepest = t.getMessage();
+            }
+            if (t.getCause() == null || t.getCause() == t) {
+                break;
+            }
             t = t.getCause();
         }
-        String msg = t.getMessage();
-        return msg == null ? t.getClass().getSimpleName() : msg;
+        return deepest == null ? e.getClass().getSimpleName() : deepest;
     }
 }

@@ -10,6 +10,7 @@ import com.yiyu.mergebot.yunxiao.CommitItem;
 import com.yiyu.mergebot.yunxiao.MrView;
 import com.yiyu.mergebot.yunxiao.YunxiaoClient;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
@@ -83,9 +84,10 @@ public class FlowWebhookController {
             @RequestParam(value = "author", defaultValue = "") String author,
             @RequestParam(value = "title", defaultValue = "") String title,
             @RequestParam(value = "runNo", defaultValue = "") String runNo,
-            @RequestHeader(value = "X-Codeup-Token", required = false) String token) {
+            @RequestHeader HttpHeaders headers) {
 
-        if (!guard.pass(token)) {
+        // 和代码库入口共用同一套取头规则（认 X-Codeup-Token 和 X-Gitlab-Token）
+        if (!guard.pass(guard.tokenOf(headers))) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body("forbidden");
         }
 

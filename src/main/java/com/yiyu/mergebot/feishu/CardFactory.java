@@ -28,14 +28,12 @@ public class CardFactory {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
-    /** 待审批卡片：合并 / 拒绝 两个按钮 */
-    public String approvalCard(String repoName, String repoId, String localId, MrView mr) {
-        return approvalCard(repoName, repoId, localId, mr, null,
-                mr == null ? null : mr.getDetailUrl());
-    }
-
     /**
      * 待审批卡片（带提交内容和云效链接）。
+     *
+     * 注意这里**没有"不带 commits"的简化重载**：曾经有一个 4 参数的版本，
+     * 签名上写着支持 mr 为 null，方法体里却直接调 mr.mergeable()，
+     * 真为 null 就会空指针。反正没人用到，删掉比留着"看着安全其实会炸"强。
      *
      * @param commits 本次带的提交，可为空（查不到就不显示这一段，不影响卡片发出去）
      * @param webUrl  合并请求在云效网页上的地址，可为空（空则回落到详情接口返回的 detailUrl）

@@ -104,8 +104,8 @@ public class YunxiaoWebhookController {
                                           @RequestHeader HttpHeaders headers) {
 
         // 云效同时发 X-Codeup-Token 和 X-Gitlab-Token 两个头（跟报文一样有新旧两套约定），
-        // 任意一个能对上就放行。只认其中一个的话，哪天云效换了头就会被当成"密钥错了"。
-        String token = firstHeader(headers, "X-Codeup-Token", "X-Gitlab-Token");
+        // 取头规则统一放在 WebhookGuard 里，两个 Webhook 入口共用，避免各写一套。
+        String token = guard.tokenOf(headers);
 
         // 第一行就记：云效到底有没有把请求送进来、带了多少字节、判成什么事件。
         // 没有这一行的话，"什么都没打印"既可能是没收到请求，也可能是收到了但被静默忽略，
@@ -313,17 +313,6 @@ public class YunxiaoWebhookController {
     }
 
     // ---------------------------------------------------------------- 请求头
-
-    /** 按顺序取第一个有值的请求头，都没有就返回空串 */
-    private String firstHeader(HttpHeaders headers, String... names) {
-        for (String n : names) {
-            String v = headers.getFirst(n);
-            if (StringUtils.hasText(v)) {
-                return v;
-            }
-        }
-        return "";
-    }
 
     private String orDefault(String s, String fallback) {
         return StringUtils.hasText(s) ? s : fallback;

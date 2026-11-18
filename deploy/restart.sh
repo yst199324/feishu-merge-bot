@@ -17,7 +17,7 @@ APP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STOP_SH="$APP_HOME/stop.sh"
 START_SH="$APP_HOME/start.sh"
 
-# 端口从 1 到 0 之间需要一点时间释放，停完等一下再起，避免 Address already in use
+# 进程退出到端口真正释放之间有一点时间差，停完等一下再起，避免 Address already in use
 PORT_RELEASE_WAIT=2
 
 if [ ! -x "$STOP_SH" ]; then

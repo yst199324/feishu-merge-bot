@@ -4,6 +4,7 @@ import com.lark.oapi.event.EventDispatcher;
 import com.lark.oapi.ws.Client;
 import com.yiyu.mergebot.config.FeishuProperties;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
@@ -30,11 +31,15 @@ import org.springframework.stereotype.Component;
  * 所以正确写法是：
  *   1. 连上（start() 返回）之后，这个线程就**挂住别动**，什么都不做；
  *   2. 只有 start() **抛异常**（根本没连上）才退避重试，那时建新 Client 是安全的，
- *      因为上一次并没有建立起连接。
+ *      因为上一次并没有建立起连接；
+ *   3. 连上之后**不做额外的存活探测**——断线重连交给 SDK。
+ *      这里是有取舍的：自己再建连接会和 SDK 的重连抢名额，正是上面那个坑的成因。
+ *      所以观察到"卡片能收、点按钮没反应"且日志里没有任何异常时，
+ *      先把日志级别调到 DEBUG 看有没有重连动作，必要时重启服务，别急着加自动重建。
  */
 @Slf4j
 @Component
-public class FeishuWsRunner implements ApplicationRunner {
+public class FeishuWsRunner implements ApplicationRunner, DisposableBean {
 
     /**
      * 连上之后每隔多久醒一次、检查线程是否该退出。
@@ -45,8 +50,8 @@ public class FeishuWsRunner implements ApplicationRunner {
     private final FeishuProperties props;
     private final CardActionHandler cardActionHandler;
 
-    /** 持有当前连接，避免被 GC；也方便将来加健康检查 */
-    private volatile Client current;
+    /** 长连接线程。关闭时要中断它，否则非守护线程会让 JVM 退不掉，只能被 kill -9 */
+    private volatile Thread wsThread;
 
     public FeishuWsRunner(FeishuProperties props, CardActionHandler cardActionHandler) {
         this.props = props;
@@ -70,7 +75,6 @@ public class FeishuWsRunner implements ApplicationRunner {
                     Client client = new Client.Builder(props.getAppId(), props.getAppSecret())
                             .eventHandler(dispatcher)
                             .build();
-                    current = client;
 
                     log.info("正在连接飞书长连接...");
                     client.start();
@@ -90,10 +94,10 @@ public class FeishuWsRunner implements ApplicationRunner {
                     if (isConnectionLimited(msg)) {
                         // 这条错误堆栈对排查没帮助，只打一句人能看懂的话 + 该去查什么
                         log.error("飞书长连接被拒：同一应用连接数超限（1000040350）。"
-                                + "飞书规定每个应用最多 50 个长连接，本服务只会用 1 条，"
-                                + "所以超限说明有别的客户端在连着同一个 app-id"
-                                + "（同事机器、旧部署目录、或本服务的历史进程还没退干净）。"
-                                + "排查：ps -ef | grep java 确认只剩一个实例。{} 秒后重试", backoffMs / 1000);
+                                + "飞书规定每个应用最多 50 个长连接。本服务正常只占 1 条，所以按这个顺序查："
+                                + "① 跑的是不是修过的版本（旧版有个 bug 会每 5 秒新建一条连接、旧的不断开，"
+                                + "十几分钟就能撞满）；② ps -ef | grep java 看有没有别的实例或残留进程"
+                                + "连着同一个 app-id。{} 秒后重试", backoffMs / 1000);
                     } else {
                         log.error("飞书长连接异常，{} 秒后重试：{}", backoffMs / 1000, msg, e);
                     }
@@ -107,7 +111,25 @@ public class FeishuWsRunner implements ApplicationRunner {
             }
         }, "feishu-ws");
         thread.setDaemon(false);
+        wsThread = thread;
         thread.start();
+    }
+
+    /**
+     * Spring 关闭时中断长连接线程。
+     *
+     * 这个线程是非守护的，而且连上之后一直在 sleep 保活。
+     * 不主动中断的话，JVM 会认为"还有活干"而拒绝退出，
+     * stop.sh 只能干等 30 秒再 kill -9：既不优雅（正在处理的点击直接断在半路），
+     * 也会让人觉得"服务停不下来"。
+     */
+    @Override
+    public void destroy() {
+        Thread t = wsThread;
+        if (t != null && t.isAlive()) {
+            log.info("正在关闭飞书长连接线程...");
+            t.interrupt();
+        }
     }
 
     /** 飞书的"连接数超限"错误码。单独识别出来，是为了打一句有用的话而不是甩堆栈 */
