@@ -247,20 +247,27 @@ public class FeishuMessageService {
      *  2. 缓存里没找到时，强制刷一次再判断——刚被拉进群的人不用等缓存过期；
      *  3. 接口失败保留上一份缓存（一次网络抖动不该让所有人点不动），
      *     如果从来没有成功拿到过，就一律判为"不是成员"（宁可点不动，不可越权）。
+     *
+     * 注意：**一次点击最多拉一次名单**。缓存过期会先拉一次，拉完如果这人还不在里面，
+     * 不再走强制刷新——否则同一次点击会连拉两遍（每遍最多 5 页）。
      */
     public boolean isGroupMember(String openId) {
         String chatId = props.getChatId();
         if (!StringUtils.hasText(chatId) || !StringUtils.hasText(openId)) {
             return false;
         }
-        if (System.currentTimeMillis() > memberCacheExpireAt) {
+        // 记下"本次是否因为过期而拉过"，用来避免下面重复拉取
+        boolean refreshed = System.currentTimeMillis() > memberCacheExpireAt;
+        if (refreshed) {
             refreshMembers(chatId);
         }
         if (memberIds.contains(openId)) {
             return true;
         }
-        // 没命中：可能是刚进群的人，绕过缓存再查一次
-        refreshMembers(chatId, true);
+        // 没命中：可能是刚进群的人，绕过缓存再查一次；本次已经拉过就不重复了
+        if (!refreshed) {
+            refreshMembers(chatId, true);
+        }
         return memberIds.contains(openId);
     }
 
@@ -270,6 +277,11 @@ public class FeishuMessageService {
 
     /**
      * @param force true 表示不管缓存有没有过期都重新拉
+     *
+     * 为什么整个方法加锁、连网络调用也包在里面：
+     * 两个人同时点的时候，宁可让后一个等几秒拿到**最新名单**，也不要让它拿旧名单误判
+     * （误判的后果是"明明在群里却提示没权限"，比慢几秒难解释得多）。
+     * 点击频率一天几十次，这点阻塞不构成问题。
      */
     private synchronized void refreshMembers(String chatId, boolean force) {
         long now = System.currentTimeMillis();
