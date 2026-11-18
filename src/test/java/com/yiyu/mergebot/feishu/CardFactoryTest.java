@@ -95,6 +95,8 @@ class CardFactoryTest {
         assertFalse(json.contains("合并请求：https"), "正文那行明文 URL 已经去掉");
         assertTrue(json.contains("云效链接（长按可复制）：https://codeup.aliyun.com/x"), "底部灰字保留可复制链接");
         assertTrue(json.contains("23a64ce8"), "按钮值里带上最近提交，供结果卡透传");
+        assertTrue(json.contains("\"url\":\"https://codeup.aliyun.com/x\""),
+                "Webhook 给的链接要塞进按钮值，结果卡的「去云效查看」直接用它");
     }
 
     @Test

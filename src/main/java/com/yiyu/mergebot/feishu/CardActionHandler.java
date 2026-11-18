@@ -97,11 +97,13 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             // 待审批卡上的「最近提交」那一行，由按钮值带回来。结果卡是整张替换的，
             // 服务端没有旧卡片内容，只能靠这个字段把它带过来（不额外调云效接口）
             String commitLine = str(value.get("commit"));
+            // Webhook 报文里云效自己给的链接，结果卡的「去云效查看」直接用它
+            String webUrl = str(value.get("url"));
 
             // 先建记录，**刻意先不查姓名**：查姓名要打飞书通讯录接口，
             // 没通过权限校验的点击不该浪费那一次调用。先用 id 末 6 位占位，通过后再补真名。
             audit = new AuditEntry(act, "未知用户（" + tail6(openId) + "）", openId, chatId, messageId,
-                    repoName, repoId, localId, commitLine);
+                    repoName, repoId, localId, commitLine, webUrl);
             // 起点日志：后面每一条都带同一个 trace，能直接串起来
             audit.step("收到点击", "act=" + act + " openId=" + tail6(openId)
                     + " 项目=" + repoName + " mr=" + localId + " 消息=" + messageId);
@@ -174,7 +176,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         audit.title(mr.getTitle()).branches(mr.branchText());
         audit.step("弹出确认卡", "状态=" + mr.getStatus() + " 分支=" + mr.branchText());
         auditLog.write(audit.result("已弹确认卡", "等人点确认合并，未做任何变更"));
-        setCard(resp, cardFactory.confirmCard(repoName, repoId, localId, mr, audit.getLatestCommit()));
+        setCard(resp, cardFactory.confirmCard(repoName, repoId, localId, mr,
+                audit.getLatestCommit(), audit.getWebUrl()));
         return resp;
     }
 
@@ -192,7 +195,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         auditLog.write(audit.result("已取消", "卡片回到待审批状态，云效没有变更"));
         setCard(resp, cardFactory.approvalCard(repoName, repoId, localId, mr,
                 yunxiao.commitsFor(repoId, mr.getSourceBranch(), mr.getTargetBranch()),
-                yunxiao.webUrlFor(repoName, localId, mr)));
+                resultUrl(audit, repoName, localId, mr)));
         resp.setToast(toast("info", "已取消"));
         return resp;
     }
@@ -287,7 +290,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         resp.setToast(toast("success", "已合并"));
         setCard(resp, cardFactory.resultCard(repoName, latest.getTitle(), ResultKind.MERGED, operator,
                 "已合并进 " + latest.getTargetBranch(), latest,
-                yunxiao.webUrlFor(repoName, localId, latest), audit.getLatestCommit()));
+                resultUrl(audit, repoName, localId, latest), audit.getLatestCommit()));
         return resp;
     }
 
@@ -361,7 +364,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             resp.setToast(toast("success", "已拒绝"));
             setCard(resp, cardFactory.resultCard(repoName, mr.getTitle(), ResultKind.CLOSED, operator,
                     "已拒绝（关闭）该合并请求", after,
-                    yunxiao.webUrlFor(repoName, localId, mr), audit.getLatestCommit()));
+                    resultUrl(audit, repoName, localId, mr), audit.getLatestCommit()));
             return resp;
         } catch (YunxiaoException e) {
             audit.stepError(step, rootMessage(e), e);
@@ -420,7 +423,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                     + "，已恢复待审批卡片供重试");
             setCard(resp, cardFactory.approvalCard(audit.getProject(), repoId, localId, mr,
                     yunxiao.commitsFor(repoId, mr.getSourceBranch(), mr.getTargetBranch()),
-                    yunxiao.webUrlFor(audit.getProject(), localId, mr)));
+                    resultUrl(audit, audit.getProject(), localId, mr)));
             resp.setToast(toast("info", "上次操作没有生效，已恢复卡片，可以重新点"));
             return resp;
         }
@@ -434,7 +437,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         resp.setToast(toast("success", "这个请求已经" + kind.getLabel() + "了"));
         setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), kind, operator,
                 merging ? "已经合并进 " + target : "已经拒绝（关闭）", mr,
-                yunxiao.webUrlFor(audit.getProject(), localId, mr), audit.getLatestCommit()));
+                resultUrl(audit, audit.getProject(), localId, mr), audit.getLatestCommit()));
         return resp;
     }
 
@@ -455,7 +458,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         resp.setToast(toast("error", message));
         setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), ResultKind.FAILED,
                 audit.getOperator(), message, mr,
-                yunxiao.webUrlFor(audit.getProject(), audit.getMrId(), mr), audit.getLatestCommit()));
+                resultUrl(audit, audit.getProject(), audit.getMrId(), mr), audit.getLatestCommit()));
         return resp;
     }
 
@@ -489,6 +492,18 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
     /** 401 / 403 说明是令牌的问题，不是代码或网络的偶发故障 */
     private boolean isAuthError(String msg) {
         return msg != null && (msg.contains("HTTP 401") || msg.contains("HTTP 403"));
+    }
+
+    /**
+     * 卡片上的云效链接。
+     *
+     * 优先用 **Webhook 报文里云效自己给的 url**（发卡时塞进按钮值、一路透传过来），
+     * 那是云效拼的、最准。只有老版本发出的卡片没带这个字段时，才回落到本地拼接。
+     */
+    private String resultUrl(AuditEntry audit, String repoName, String localId, MrView mr) {
+        return StringUtils.hasText(audit.getWebUrl())
+                ? audit.getWebUrl()
+                : yunxiao.webUrlFor(repoName, localId, mr);
     }
 
     /** 令牌问题的群提醒。一小时内最多发一次，避免连续点几次刷屏 */

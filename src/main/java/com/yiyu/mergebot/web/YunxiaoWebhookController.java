@@ -211,8 +211,16 @@ public class YunxiaoWebhookController {
             commits = yunxiaoClient.commitsFor(repoId, mr.getSourceBranch(), mr.getTargetBranch());
         }
 
+        // 链接优先用 Webhook 报文里云效自己给的 url，比我们本地拼的准。
+        // 这个地址会一路透传到结果卡的「去云效查看」按钮（走按钮回调值）。
+        // 老版报文没这个字段时才回落到本地拼接。
+        String webUrl = text(attrs, "url", "web_url", "mergeRequestUrl");
+        if (!StringUtils.hasText(webUrl)) {
+            webUrl = yunxiaoClient.webUrlFor(repoName, localId, mr);
+        }
+
         String card = cardFactory.approvalCard(repoName, repoId, localId, mr, commits,
-                yunxiaoClient.webUrlFor(repoName, localId, mr), latestOnly);
+                webUrl, latestOnly);
         String messageId = messageService.sendCard(feishuProps.getChatId(), card);
         log.info("已推送审批卡片 repo={} mr={} 提交数={} 来源={} messageId={}",
                 repoId, localId, commits.size(), latestOnly ? "报文 last_commit" : "比较分支接口", messageId);

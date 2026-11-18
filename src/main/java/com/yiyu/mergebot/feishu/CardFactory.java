@@ -68,11 +68,14 @@ public class CardFactory {
             elements.add(markdown(commitsBlock(list, mr == null ? 0 : mr.getAhead(), latestOnly)));
         }
         String commitLine = latestCommitLine(list);
+        // 链接优先用 Webhook 报文里云效自己给的（调用方已经解析好传进来），
+        // 拿不到才回落到详情接口/本地拼接。提前算好，因为还要塞进按钮值给结果卡用
+        String url = blank(webUrl, mr == null ? "" : blank(mr.getDetailUrl(), ""));
 
         boolean canMerge = mr.mergeable() && !mr.hasConflict() && mr.isAllRequirementsPass();
 
-        Map<String, Object> mergeValue = value("merge", repoName, repoId, localId, commitLine);
-        Map<String, Object> closeValue = value("close", repoName, repoId, localId, commitLine);
+        Map<String, Object> mergeValue = value("merge", repoName, repoId, localId, commitLine, url);
+        Map<String, Object> closeValue = value("close", repoName, repoId, localId, commitLine, url);
 
         Map<String, Object> mergeBtn = button("合并到 " + blank(mr.getTargetBranch(), "未知分支"),
                 canMerge ? "primary" : "default", mergeValue);
@@ -89,7 +92,6 @@ public class CardFactory {
         // 但也不能完全去掉——手机上点按钮只能在本机浏览器打开，
         // 想"发到电脑上接着看"就得能复制，而按钮上的文字复制不了，只有正文文字可以长按复制。
         // 折中放在最底部灰字里：不干扰阅读，需要时还能长按。
-        String url = blank(webUrl, mr == null ? "" : blank(mr.getDetailUrl(), ""));
         if (!url.isEmpty()) {
             elements.add(linkButton("在云效打开", "default", url));
         }
@@ -169,7 +171,8 @@ public class CardFactory {
     }
 
     /** 二次确认卡片：合并是不可逆动作，多一次点击换掉一整类误操作 */
-    public String confirmCard(String repoName, String repoId, String localId, MrView mr, String commitLine) {
+    public String confirmCard(String repoName, String repoId, String localId, MrView mr,
+                              String commitLine, String webUrl) {
         List<Object> elements = new ArrayList<>();
         elements.add(markdown("**确认要把这个合并请求合进 "
                 + esc(blank(mr.getTargetBranch(), "目标分支")) + " 吗？**\n"
@@ -179,9 +182,9 @@ public class CardFactory {
                 + "发起人：" + esc(blank(mr.getAuthorName(), "未知")) + "\n"
                 + "发起时间：" + esc(formatTime(mr.getCreatedAt()))));
 
-        // 把最近提交继续往下带：确认卡的按钮被点之后，结果卡还要用它
-        Map<String, Object> okValue = value("merge_ok", repoName, repoId, localId, commitLine);
-        Map<String, Object> cancelValue = value("cancel", repoName, repoId, localId, commitLine);
+        // 把最近提交和 Webhook 链接继续往下带：确认卡的按钮被点之后，结果卡还要用
+        Map<String, Object> okValue = value("merge_ok", repoName, repoId, localId, commitLine, webUrl);
+        Map<String, Object> cancelValue = value("cancel", repoName, repoId, localId, commitLine, webUrl);
 
         elements.add(buttons(
                 button("确认合并", "primary_filled", okValue),
@@ -322,26 +325,23 @@ public class CardFactory {
      * 按钮回传参数。repo / mr / name 直接塞进按钮，点击时原样带回，
      * 服务端就不用维护"卡片消息 id -> 合并请求"的对应表。
      */
-    private Map<String, Object> value(String act, String repoName, String repoId, String localId) {
-        return value(act, repoName, repoId, localId, "");
-    }
-
     /**
      * 按钮的回调值。
      *
-     * `commit` 是待审批卡上的「最近提交」那一行。为什么要把展示用的文字塞进按钮值：
-     * 结果卡是**整张替换**原卡片的，服务端手里没有旧卡片内容；
-     * 而合并之后源分支可能已经被删掉，重新调"比较两个分支"接口多半拿不到提交。
-     * 让按钮把它带回来，结果卡才能原样保留这一行，且不额外调任何接口。
+     * `commit` 是「最近提交」那一行，`url` 是 Webhook 报文里云效自己给的合并请求链接。
+     * 为什么要把展示用的东西塞进按钮值：结果卡是**整张替换**原卡片的，服务端没有旧卡片内容，
+     * 而合并之后源分支可能已删、详情接口也可能不再返回链接字段。
+     * 让按钮带回来，结果卡才能原样保留，且不额外调任何接口、不靠本地拼地址猜。
      */
     private Map<String, Object> value(String act, String repoName, String repoId, String localId,
-                                      String commitLine) {
+                                      String commitLine, String webUrl) {
         Map<String, Object> v = new LinkedHashMap<>();
         v.put("act", act);
         v.put("repo", repoId);
         v.put("mr", localId);
         v.put("name", repoName == null ? "" : repoName);
         v.put("commit", commitLine == null ? "" : commitLine);
+        v.put("url", webUrl == null ? "" : webUrl);
         return v;
     }
 
