@@ -100,6 +100,20 @@ public class TestController {
      * 看一眼云效里现在有哪些待合并请求。
      * 这一步只查询、不调飞书，用来确认令牌、组织 ID、仓库 ID 三个值都填对了。
      */
+    /**
+     * 查某个 open_id 能不能换到姓名。卡片上显示「未知用户」时先跑这个。
+     *
+     * 用法（openId 从日志的 `openId=ou_xxx` 直接抄）：
+     *   curl "127.0.0.1:18123/test/whoami?openId=ou_xxx"
+     *
+     * 返回飞书原始 code / msg，外加一句"该去做什么"，一次就能分清是：
+     *   权限没开通（99991672）、人不在应用可用范围（41050）、还是参数传错。
+     */
+    @GetMapping("/whoami")
+    public Map<String, Object> whoami(@RequestParam(value = "openId", defaultValue = "") String openId) {
+        return messageService.diagnoseUserName(openId);
+    }
+
     @GetMapping("/mrs")
     public Object openMergeRequests(@RequestParam String repo) {
         try {

@@ -24,6 +24,7 @@ import org.springframework.util.StringUtils;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -178,6 +179,58 @@ public class FeishuMessageService {
     }
 
     /**
+     * 诊断"为什么查不到这个人的姓名"。
+     *
+     * 直连飞书接口、不走缓存，把原始返回和"该去做什么"一起给出来。
+     * 卡片上显示「未知用户」时，用它一次就能分清是权限没开、人不在可用范围，还是参数传错。
+     */
+    public Map<String, Object> diagnoseUserName(String openId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("openId", openId);
+        if (!StringUtils.hasText(openId)) {
+            result.put("hint", "openId 是空的，没法查");
+            return result;
+        }
+        try {
+            GetUserResp resp = client.contact().user().get(GetUserReq.newBuilder()
+                    .userId(openId)
+                    .userIdType("open_id")
+                    .build());
+            result.put("success", resp.success());
+            result.put("code", resp.getCode());
+            result.put("msg", resp.getMsg());
+            if (resp.success() && resp.getData() != null && resp.getData().getUser() != null) {
+                result.put("name", resp.getData().getUser().getName());
+            }
+            result.put("hint", hintOf(resp.getCode(), resp.getMsg()));
+        } catch (Exception e) {
+            result.put("success", false);
+            result.put("error", e.getMessage());
+            result.put("hint", "调接口就抛异常了：先看应用凭证（app-id/app-secret）和网络，再看 error 字段");
+        }
+        return result;
+    }
+
+    /** 把飞书错误码翻译成"该去做什么"，省得对着 code 猜 */
+    private String hintOf(int code, String msg) {
+        switch (code) {
+            case 0:
+                return "接口正常，能查到姓名";
+            case 99991672:
+            case 99991663:
+                return "应用没开通「通讯录 → 获取用户基本信息」。开发者后台 → 权限管理，申请 "
+                        + "contact:user.base:readonly，然后创建版本并发布（不发版不生效）";
+            case 41050:
+                return "应用无权访问这个用户。查两处：①权限是否已开通并发布 ②开发者后台 → 应用可用范围是否包含这个人";
+            case 40004:
+            case 40002:
+                return "参数问题：确认传的确实是 open_id（ou_ 开头），不是 user_id";
+            default:
+                return "未识别的错误码 " + code + "（" + msg + "），拿这个码去飞书开放平台文档搜一下";
+        }
+    }
+
+    /**
      * 调通讯录接口取姓名，失败按 500ms / 1s / 2s 递增重试。
      *
      * 只对**异常**（网络、超时、服务端 5xx）重试；像权限不足、用户不存在这种业务错误，
@@ -199,9 +252,8 @@ public class FeishuMessageService {
                         return name;
                     }
                 }
-                log.warn("查用户姓名失败 openId={} code={} msg={}（业务错误，不重试）。"
-                                + "常见原因：应用没开通「通讯录 → 获取用户基本信息」，或该用户不在应用可用范围内",
-                        openId, resp.getCode(), resp.getMsg());
+                log.warn("查用户姓名失败 openId={} code={} msg={}（业务错误，不重试）。{}",
+                        openId, resp.getCode(), resp.getMsg(), hintOf(resp.getCode(), resp.getMsg()));
                 return "";
             } catch (Exception e) {
                 if (attempt >= NAME_RETRY_DELAY_MS.length) {
