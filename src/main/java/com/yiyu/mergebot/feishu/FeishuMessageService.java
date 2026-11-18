@@ -48,9 +48,6 @@ public class FeishuMessageService {
     /** 查姓名的重试间隔：失败后先等 500ms，再 1s，再 2s，共 3 次重试机会 */
     private static final long[] NAME_RETRY_DELAY_MS = {500L, 1000L, 2000L};
 
-    /** 群成员名单的最小刷新间隔。缓存没命中时最多这么频繁打一次接口，防止被反复点击放大 */
-    private static final long MEMBER_MIN_REFRESH_MS = 60 * 1000L;
-
     private final Client client;
     private final FeishuProperties props;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -73,9 +70,6 @@ public class FeishuMessageService {
      * 返回空串等于把"这人查不到"也缓存了 10 分钟，权限补好后要等过期才生效。
      */
     private final LoadingCache<String, String> nameCache;
-
-    /** 上次拉群成员名单的时间，用来限制刷新频率 */
-    private volatile long memberLastRefreshAt;
 
     /** 审批群成员 open_id 集合，整批缓存 */
     private volatile Set<String> memberIds = Collections.emptySet();
@@ -283,12 +277,11 @@ public class FeishuMessageService {
             // 并发进来时，前一个线程刚刷过，直接用
             return;
         }
-        // 缓存里没命中会走 force 刷新（为了照顾刚进群的人），但要限频率：
-        // 否则一个人反复点按钮，每次都触发一次全量拉取（最多 5 页），接口压力被放大
-        if (force && now - memberLastRefreshAt < MEMBER_MIN_REFRESH_MS) {
-            return;
-        }
-        memberLastRefreshAt = now;
+        // 这里**刻意不加频率限制**（曾经加过一个"60 秒内最多刷一次"，已经去掉）：
+        //   - 权限校验是第一道，不在名单的人到这一步就返回了，不会查姓名、不会动云效；
+        //   - 一次点击最多触发一次全量拉取，几十秒才可能有一次，对接口毫无压力；
+        //   - 退群的人最多在缓存有效期（300 秒）内还能点，这个可以接受。
+        // 加限流换不来什么，反而会让"刚进群的人第一次点击"被上一次刷新挡住而误拒。
         Set<String> ids = new HashSet<>();
         String pageToken = null;
         try {
