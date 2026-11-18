@@ -94,11 +94,14 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             String repoId = str(value.get("repo"));
             String localId = str(value.get("mr"));
             String repoName = str(value.get("name"));
+            // 待审批卡上的「最近提交」那一行，由按钮值带回来。结果卡是整张替换的，
+            // 服务端没有旧卡片内容，只能靠这个字段把它带过来（不额外调云效接口）
+            String commitLine = str(value.get("commit"));
 
             // 先建记录，**刻意先不查姓名**：查姓名要打飞书通讯录接口，
             // 没通过权限校验的点击不该浪费那一次调用。先用 id 末 6 位占位，通过后再补真名。
             audit = new AuditEntry(act, "未知用户（" + tail6(openId) + "）", openId, chatId, messageId,
-                    repoName, repoId, localId);
+                    repoName, repoId, localId, commitLine);
             // 起点日志：后面每一条都带同一个 trace，能直接串起来
             audit.step("收到点击", "act=" + act + " openId=" + tail6(openId)
                     + " 项目=" + repoName + " mr=" + localId + " 消息=" + messageId);
@@ -171,7 +174,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         audit.title(mr.getTitle()).branches(mr.branchText());
         audit.step("弹出确认卡", "状态=" + mr.getStatus() + " 分支=" + mr.branchText());
         auditLog.write(audit.result("已弹确认卡", "等人点确认合并，未做任何变更"));
-        setCard(resp, cardFactory.confirmCard(repoName, repoId, localId, mr));
+        setCard(resp, cardFactory.confirmCard(repoName, repoId, localId, mr, audit.getLatestCommit()));
         return resp;
     }
 
@@ -283,7 +286,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         auditLog.write(audit);
         resp.setToast(toast("success", "已合并"));
         setCard(resp, cardFactory.resultCard(repoName, latest.getTitle(), ResultKind.MERGED, operator,
-                "已合并进 " + latest.getTargetBranch(), latest, latest.getDetailUrl()));
+                "已合并进 " + latest.getTargetBranch(), latest, latest.getDetailUrl(),
+                audit.getLatestCommit()));
         return resp;
     }
 
@@ -356,7 +360,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             auditLog.write(audit);
             resp.setToast(toast("success", "已拒绝"));
             setCard(resp, cardFactory.resultCard(repoName, mr.getTitle(), ResultKind.CLOSED, operator,
-                    "已拒绝（关闭）该合并请求", after, mr.getDetailUrl()));
+                    "已拒绝（关闭）该合并请求", after, mr.getDetailUrl(), audit.getLatestCommit()));
             return resp;
         } catch (YunxiaoException e) {
             audit.stepError(step, rootMessage(e), e);
@@ -428,7 +432,8 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
 
         resp.setToast(toast("success", "这个请求已经" + kind.getLabel() + "了"));
         setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), kind, operator,
-                merging ? "已经合并进 " + target : "已经拒绝（关闭）", mr, mr.getDetailUrl()));
+                merging ? "已经合并进 " + target : "已经拒绝（关闭）", mr, mr.getDetailUrl(),
+                audit.getLatestCommit()));
         return resp;
     }
 
@@ -448,7 +453,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
 
         resp.setToast(toast("error", message));
         setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), ResultKind.FAILED,
-                audit.getOperator(), message, mr, mr.getDetailUrl()));
+                audit.getOperator(), message, mr, mr.getDetailUrl(), audit.getLatestCommit()));
         return resp;
     }
 

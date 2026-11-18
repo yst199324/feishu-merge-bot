@@ -61,16 +61,18 @@ public class CardFactory {
             elements.add(markdown("<font color='grey'>说明</font>\n" + esc(desc)));
         }
 
-        // 本次提交。多的时候只列前 5 条，避免卡片被撑爆（飞书对卡片体积有上限）
+        // 最近一条提交。Webhook 入口传进来的就是报文里的 last_commit（只有一条），
+        // **不额外调云效接口**；把这一行塞进按钮值，结果卡替换原卡片时才能原样保留。
         List<CommitItem> list = commits == null ? new ArrayList<>() : commits;
         if (!list.isEmpty()) {
             elements.add(markdown(commitsBlock(list, mr == null ? 0 : mr.getAhead(), latestOnly)));
         }
+        String commitLine = latestCommitLine(list);
 
         boolean canMerge = mr.mergeable() && !mr.hasConflict() && mr.isAllRequirementsPass();
 
-        Map<String, Object> mergeValue = value("merge", repoName, repoId, localId);
-        Map<String, Object> closeValue = value("close", repoName, repoId, localId);
+        Map<String, Object> mergeValue = value("merge", repoName, repoId, localId, commitLine);
+        Map<String, Object> closeValue = value("close", repoName, repoId, localId, commitLine);
 
         Map<String, Object> mergeBtn = button("合并到 " + blank(mr.getTargetBranch(), "未知分支"),
                 canMerge ? "primary" : "default", mergeValue);
@@ -167,7 +169,7 @@ public class CardFactory {
     }
 
     /** 二次确认卡片：合并是不可逆动作，多一次点击换掉一整类误操作 */
-    public String confirmCard(String repoName, String repoId, String localId, MrView mr) {
+    public String confirmCard(String repoName, String repoId, String localId, MrView mr, String commitLine) {
         List<Object> elements = new ArrayList<>();
         elements.add(markdown("**确认要把这个合并请求合进 "
                 + esc(blank(mr.getTargetBranch(), "目标分支")) + " 吗？**\n"
@@ -177,8 +179,9 @@ public class CardFactory {
                 + "发起人：" + esc(blank(mr.getAuthorName(), "未知")) + "\n"
                 + "发起时间：" + esc(formatTime(mr.getCreatedAt()))));
 
-        Map<String, Object> okValue = value("merge_ok", repoName, repoId, localId);
-        Map<String, Object> cancelValue = value("cancel", repoName, repoId, localId);
+        // 把最近提交继续往下带：确认卡的按钮被点之后，结果卡还要用它
+        Map<String, Object> okValue = value("merge_ok", repoName, repoId, localId, commitLine);
+        Map<String, Object> cancelValue = value("cancel", repoName, repoId, localId, commitLine);
 
         elements.add(buttons(
                 button("确认合并", "primary_filled", okValue),
@@ -186,8 +189,8 @@ public class CardFactory {
 
         // header 也带上标题：合并是不可逆操作，确认时看错请求是最贵的一类错。
         // 大标题里写清楚"确认的是哪一件事"，比正文里描述一百字都顶用。
-        String title = blank(mr.getTitle(), "");
-        return toJson(card("orange", title.isEmpty() ? "二次确认" : "二次确认 · " + shorten(title, 20), elements));
+        // 和其它卡片共用 headOf，截断规则保持一致（按显示宽度，中文算两格）
+        return toJson(card("orange", headOf("二次确认", mr.getTitle(), ""), elements));
     }
 
     /** 结果卡片：操作完成后回写，把按钮换成结论，避免重复点击 */
@@ -206,16 +209,22 @@ public class CardFactory {
      * @param message 结果说明，如「已合并进 test」
      */
     public String resultCard(String repoName, String taskTitle, ResultKind kind, String operator,
-                             String message, MrView mr, String detailUrl) {
+                             String message, MrView mr, String detailUrl, String commitLine) {
         List<Object> elements = new ArrayList<>();
 
         StringBuilder sb = new StringBuilder();
         // 结果行放最前面：打开卡片第一眼要看的是"成没成、合到哪"
         sb.append("**<font color='").append(kind.getColor()).append("'>")
                 .append(esc(message)).append("</font>**\n");
-        // 完整标题。header 里是截断版，这里给全的，长标题也能看全
+        // 完整标题，**不截断**——header 那行放不下是必然的，正文就是用来看全的
         if (!blank(taskTitle, "").isEmpty()) {
             sb.append("**").append(esc(taskTitle)).append("**\n");
+        }
+        // 最近提交紧跟标题下一行。用的是 Webhook 报文里的 last_commit，
+        // 由按钮值透传过来，**不额外调云效接口**（合并后源分支可能已删，也查不到）
+        if (!blank(commitLine, "").isEmpty()) {
+            sb.append("\n<font color='grey'>最近提交</font>\n")
+                    .append(esc(commitLine)).append("\n");
         }
         sb.append("\n");
 
@@ -242,21 +251,67 @@ public class CardFactory {
     }
 
     /**
+     * 卡片头部那一行大概能放多少个"半角字符"（一个中文算两个）。
+     *
+     * 飞书 header 是单行 plain_text，**不支持换行**（换行符会被忽略），
+     * 群消息列表也只显示这一行。所以标题再长也只能截，
+     * 我们截得合理一点，别让飞书再截第二次。
+     */
+    private static final int HEAD_MAX_WIDTH = 38;
+
+    /**
      * header 文案：「状态 · 标题」。
      *
      * 标题为空回落到项目名；两个都空就只显示状态。
      * 为什么一定要带标题：群消息列表只显示这一行，只写状态等于没说是哪条请求。
-     * 为什么截断到 24 字：飞书 header 一行放不下太长，会换行或被硬切，看起来像渲染坏了。
+     *
+     * 截断按**显示宽度**算，不是字符数：中文一个字占两位宽。
+     * 以前按"24 个字符"截，中文标题实际占 48 宽（超出后被飞书再截一次，看着像被切了两次），
+     * 而英文项目名只占 24 宽（白白浪费）。现在统一按宽度 38 算：
+     * 中文标题能放 19 个字，`1998java/source-admin-new` 这种项目名能完整显示。
      */
     private String headOf(String status, String title, String repoName) {
         String t = blank(title, "");
-        int max = 24;
         if (t.isEmpty()) {
-            // 回落到项目名时放宽到 30：项目名是标识，截掉一个字母都会看着像出错了
             t = blank(repoName, "");
-            max = 30;
         }
-        return t.isEmpty() ? status : status + " · " + shorten(t, max);
+        return t.isEmpty() ? status : status + " · " + shortenByWidth(t, HEAD_MAX_WIDTH);
+    }
+
+    /**
+     * 按显示宽度截断：中文/全角算 2，其余算 1。
+     *
+     * 截断后加省略号，让读者知道"后面还有"。
+     * 完整内容一定还会在正文里出现一次，不用担心里面的字丢了。
+     */
+    private String shortenByWidth(String s, int maxWidth) {
+        if (s == null || s.isEmpty()) {
+            return "";
+        }
+        int width = 0;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            int cw = isWide(c) ? 2 : 1;
+            if (width + cw > maxWidth) {
+                return sb.append("…").toString();
+            }
+            sb.append(c);
+            width += cw;
+        }
+        return s;
+    }
+
+    /** 粗略判断是不是"占两格"的字符：CJK 汉字、假名、全角标点都在这个区间 */
+    private boolean isWide(char c) {
+        return c >= 0x1100 && (c <= 0x115F        // 韩文字母
+                || c == 0x2329 || c == 0x232A
+                || (c >= 0x2E80 && c <= 0xA4CF)   // CJK 部首、汉字、假名、全角符号
+                || (c >= 0xAC00 && c <= 0xD7A3)   // 韩文音节
+                || (c >= 0xF900 && c <= 0xFAFF)   // CJK 兼容汉字
+                || (c >= 0xFE30 && c <= 0xFE6F)   // CJK 兼容形式
+                || (c >= 0xFF00 && c <= 0xFF60)   // 全角 ASCII
+                || (c >= 0xFFE0 && c <= 0xFFE6));
     }
 
     // ---------------------------------------------------------------- 内部
@@ -266,12 +321,36 @@ public class CardFactory {
      * 服务端就不用维护"卡片消息 id -> 合并请求"的对应表。
      */
     private Map<String, Object> value(String act, String repoName, String repoId, String localId) {
+        return value(act, repoName, repoId, localId, "");
+    }
+
+    /**
+     * 按钮的回调值。
+     *
+     * `commit` 是待审批卡上的「最近提交」那一行。为什么要把展示用的文字塞进按钮值：
+     * 结果卡是**整张替换**原卡片的，服务端手里没有旧卡片内容；
+     * 而合并之后源分支可能已经被删掉，重新调"比较两个分支"接口多半拿不到提交。
+     * 让按钮把它带回来，结果卡才能原样保留这一行，且不额外调任何接口。
+     */
+    private Map<String, Object> value(String act, String repoName, String repoId, String localId,
+                                      String commitLine) {
         Map<String, Object> v = new LinkedHashMap<>();
         v.put("act", act);
         v.put("repo", repoId);
         v.put("mr", localId);
         v.put("name", repoName == null ? "" : repoName);
+        v.put("commit", commitLine == null ? "" : commitLine);
         return v;
+    }
+
+    /** 只取最后一条提交，一行。结果卡要显示的就是这一行，不带整段列表 */
+    private String latestCommitLine(List<CommitItem> commits) {
+        if (commits == null || commits.isEmpty()) {
+            return "";
+        }
+        CommitItem c = commits.get(0);
+        return blank(c.getShortId(), "") + "　" + blank(c.getMessage(), "")
+                + "　" + blank(c.getAuthor(), "");
     }
 
     /**
@@ -409,14 +488,6 @@ public class CardFactory {
         }
         String t = s.replace("\r\n", "\n").replaceAll("\n{3,}", "\n\n").trim();
         return t.length() <= max ? t : t.substring(0, max - 1) + "…";
-    }
-
-    /** 卡片标题有长度限制，项目名太长就截断，超了飞书会拒收整张卡片 */
-    private String shorten(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= max ? s : s.substring(0, max - 1) + "…";
     }
 
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");

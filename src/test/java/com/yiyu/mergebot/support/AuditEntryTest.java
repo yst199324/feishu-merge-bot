@@ -23,7 +23,7 @@ class AuditEntryTest {
     @DisplayName("追踪号 = 消息编号末 6 位 / 合并请求编号")
     void trace() {
         AuditEntry e = new AuditEntry("merge_ok", "杨书庭（676706）", "ou_7d8a6e6df7621556ce0d21922b676706",
-                "oc_abc", "om_xyz123456789", "1998java/source-admin-new", "5425167", "36");
+                "oc_abc", "om_xyz123456789", "1998java/source-admin-new", "5425167", "36", "");
         assertEquals("456789/36", e.getTrace());
     }
 
@@ -31,7 +31,7 @@ class AuditEntryTest {
     @DisplayName("没有消息编号时追踪号用 no-msg 兜底，不会拼出空值")
     void traceWithoutMessageId() {
         AuditEntry e = new AuditEntry("close", "未知用户（676706）", "ou_xxx",
-                "", "", "p", "5425167", "36");
+                "", "", "p", "5425167", "36", "");
         assertTrue(e.getTrace().startsWith("no-msg/"));
     }
 
@@ -41,7 +41,7 @@ class AuditEntryTest {
         MrView mr = MrView.of(mapper.readTree("{\"title\":\"验证合并\",\"sourceBranch\":\"dev订单\","
                 + "\"targetBranch\":\"test\",\"status\":\"TO_BE_MERGED\",\"allRequirementsPass\":true}"));
         AuditEntry e = new AuditEntry("merge_ok", "杨书庭（676706）", "ou_7d8a6e6df7621556ce0d21922b676706",
-                "oc_c8db", "om_xyz123456789", "1998java/source-admin-new", "5425167", "36");
+                "oc_c8db", "om_xyz123456789", "1998java/source-admin-new", "5425167", "36", "");
         e.title(mr.getTitle()).branches(mr.branchText()).result("成功", "已合并进 test\n第二行说明");
         String line = e.line();
 
@@ -60,7 +60,7 @@ class AuditEntryTest {
     @Test
     @DisplayName("值里有双引号时换成单引号，不会破坏字段边界")
     void quotesAreSanitized() {
-        AuditEntry e = new AuditEntry("merge_ok", "张三", "ou_1", "oc_1", "om_1", "p", "1", "2");
+        AuditEntry e = new AuditEntry("merge_ok", "张三", "ou_1", "oc_1", "om_1", "p", "1", "2", "");
         e.result("失败", "云效说 \"不允许合并\"");
         String line = e.line();
         assertTrue(line.contains("云效说 '不允许合并'"));

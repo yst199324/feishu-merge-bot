@@ -39,13 +39,16 @@ public class AuditEntry {
     private final String repoId;
     private final String mrId;
 
+    /** 待审批卡上的「最近提交」那一行，由按钮值带回来，结果卡要原样显示 */
+    private final String latestCommit;
+
     private String title = "";
     private String branches = "";
     private String result = "未完成";
     private String detail = "";
 
     public AuditEntry(String action, String operator, String openId, String chatId, String messageId,
-                      String project, String repoId, String mrId) {
+                      String project, String repoId, String mrId, String latestCommit) {
         this.action = nz(action);
         this.operator = nz(operator);
         this.openId = nz(openId);
@@ -54,6 +57,7 @@ public class AuditEntry {
         this.project = nz(project);
         this.repoId = nz(repoId);
         this.mrId = nz(mrId);
+        this.latestCommit = nz(latestCommit);
         this.trace = buildTrace(this.messageId, this.mrId);
     }
 
