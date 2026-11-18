@@ -122,10 +122,27 @@
         </filter>
     </appender>
 
+    <!-- ============================ 审计 ============================= -->
+    <!-- 谁在什么时候把哪条请求合了或拒了。单独一个文件、单独保留期（一年），
+         不跟调试日志一起按级别滚动——审计要求"能往前翻"，
+         info/error 那些 30 天就没了。只接 AUDIT 这个 logger。 -->
+    <appender name="auditAppender" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_FILE}-audit.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_FILE}-audit.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <MaxHistory>365</MaxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
     <!-- ============================= 异步 ============================= -->
-    <!-- discardingThreshold=0 表示**永不因为队列满而丢日志**（默认值是队列容量的 1/5）。
-         配合 neverBlock=true：队列真的满了就丢弃新事件、绝不阻塞业务线程。
-         注意别把这个 0 理解成"丢 20%"，正好相反。 -->
+    <!-- discardingThreshold=0：不做"按级别预先丢弃"（默认行为是队列剩余 1/5 时丢掉 INFO 以下的）。
+         neverBlock=true：队列真的满了就丢弃新事件，绝不阻塞业务线程。
+         所以最终行为是"平时全记，队列满时丢最新的"，不是"丢 20%"。 -->
     <appender name="async-debug-appender" class="ch.qos.logback.classic.AsyncAppender">
         <queueSize>1024</queueSize>
         <discardingThreshold>0</discardingThreshold>
@@ -165,6 +182,11 @@
     <!-- 自己的代码默认 INFO。排查"点了按钮没反应"这类问题时临时改成 DEBUG，
          能看到每道校验走了哪个分支（这里优先级高于 application.yml 的 logging.level） -->
     <logger name="com.yiyu.mergebot" level="INFO"/>
+
+    <!-- 审计日志只写独立文件，不往 root 冒泡，否则 info/error 里会多一份重复的 -->
+    <logger name="AUDIT" level="INFO" additivity="false">
+        <appender-ref ref="auditAppender"/>
+    </logger>
 
     <root level="INFO">
         <appender-ref ref="consoleAppender"/>

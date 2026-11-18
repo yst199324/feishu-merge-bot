@@ -44,6 +44,14 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 缓存（用户姓名）。飞书 SDK 本来就依赖这个版本，这里显式声明，
+             版本对齐避免被传递依赖带着漂移 -->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>32.0.0-jre</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-configuration-processor</artifactId>

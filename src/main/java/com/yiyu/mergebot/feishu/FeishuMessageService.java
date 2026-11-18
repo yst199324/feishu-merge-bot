@@ -2,6 +2,9 @@ package com.yiyu.mergebot.feishu;
 
 import com.lark.oapi.Client;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.lark.oapi.service.contact.v3.model.GetUserReq;
 import com.lark.oapi.service.contact.v3.model.GetUserResp;
 import com.lark.oapi.service.im.v1.model.CreateMessageReq;
@@ -22,6 +25,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 飞书消息发送 + 审批群成员判断。
@@ -34,9 +38,39 @@ public class FeishuMessageService {
     private static final int MAX_MEMBER_PAGES = 5;
     private static final int PAGE_SIZE = 100;
 
+    /** 姓名缓存有效期。姓名不常变，10 分钟足够；到点后重新拉，改名最多 10 分钟生效 */
+    private static final int NAME_CACHE_TTL_MINUTES = 10;
+
+    /** 姓名缓存容量上限。审批的人不会超过这个数，纯粹防内存无上限增长 */
+    private static final int NAME_CACHE_MAX_SIZE = 500;
+
+    /** 查姓名的重试间隔：失败后先等 500ms，再 1s，再 2s，共 3 次重试机会 */
+    private static final long[] NAME_RETRY_DELAY_MS = {500L, 1000L, 2000L};
+
+    /** 群成员名单的最小刷新间隔。缓存没命中时最多这么频繁打一次接口，防止被反复点击放大 */
+    private static final long MEMBER_MIN_REFRESH_MS = 60 * 1000L;
+
     private final Client client;
     private final FeishuProperties props;
     private final ObjectMapper mapper = new ObjectMapper();
+
+    /**
+     * open_id -> 姓名。
+     *
+     * 用 Guava 的 `refreshAfterWrite` 而不是手写"存时间戳 + 每次判断过期"，因为它天生就是
+     * 这个需求要的语义：
+     *   - 写入后 10 分钟内直接返回缓存，不打接口；
+     *   - 超过 10 分钟后的第一次读取会**同步**去飞书拉新名字（所以改名最多 10 分钟生效）；
+     *   - **刷新失败时保留旧值并用旧值返回**——一次接口抖动不该让卡片上的名字变成"未知用户"；
+     *   - 顺带限制容量，不会因为来的人多而无限涨内存。
+     *
+     * load 里查不到名字就抛异常、不返回空串：Guava 会把返回值缓存住，
+     * 返回空串等于把"这人查不到"也缓存了 10 分钟，权限补好后要等过期才生效。
+     */
+    private final LoadingCache<String, String> nameCache;
+
+    /** 上次拉群成员名单的时间，用来限制刷新频率 */
+    private volatile long memberLastRefreshAt;
 
     /** 审批群成员 open_id 集合，整批缓存 */
     private volatile Set<String> memberIds = Collections.emptySet();
@@ -47,6 +81,20 @@ public class FeishuMessageService {
     public FeishuMessageService(Client client, FeishuProperties props) {
         this.client = client;
         this.props = props;
+        this.nameCache = CacheBuilder.newBuilder()
+                .maximumSize(NAME_CACHE_MAX_SIZE)
+                .refreshAfterWrite(NAME_CACHE_TTL_MINUTES, TimeUnit.MINUTES)
+                .build(new CacheLoader<String, String>() {
+                    @Override
+                    public String load(String openId) {
+                        String name = fetchUserName(openId);
+                        if (!StringUtils.hasText(name)) {
+                            // 抛出去 = 这个结论不缓存，下次点击还会再试一次
+                            throw new IllegalStateException("查不到姓名 openId=" + openId);
+                        }
+                        return name;
+                    }
+                });
     }
 
     /** 发送交互卡片，返回 message_id */
@@ -108,20 +156,92 @@ public class FeishuMessageService {
         return resp;
     }
 
-    /** 用 open_id 换人名，失败就退回 open_id 本身 */
+    /**
+     * 用 open_id 换人名。查不到返回空字符串，由 {@link #displayName} 兜底成"未知用户（末 6 位）"。
+     *
+     * 缓存行为全交给 Guava（见 nameCache 的注释）：10 分钟内直接命中；
+     * 超过 10 分钟后第一次读会去飞书拉新名字，**拉取失败保留旧名**。
+     */
     public String userName(String openId) {
-        try {
-            GetUserResp resp = client.contact().user().get(GetUserReq.newBuilder()
-                    .userId(openId)
-                    .userIdType("open_id")
-                    .build());
-            if (resp.success() && resp.getData() != null && resp.getData().getUser() != null) {
-                return resp.getData().getUser().getName();
-            }
-        } catch (Exception e) {
-            log.debug("查用户信息失败 openId={}: {}", openId, e.getMessage());
+        if (!StringUtils.hasText(openId)) {
+            return "";
         }
-        return openId;
+        try {
+            String name = nameCache.get(openId);
+            return StringUtils.hasText(name) ? name : "";
+        } catch (Exception e) {
+            // 首次加载就失败（load 里抛了异常，所以不会缓存）。
+            // 具体原因 fetchUserName 已经打过 warn，这里只补一句便于串流程
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            log.debug("查用户姓名失败，本次不缓存 openId={}：{}", openId, cause.getMessage());
+            return "";
+        }
+    }
+
+    /**
+     * 调通讯录接口取姓名，失败按 500ms / 1s / 2s 递增重试。
+     *
+     * 只对**异常**（网络、超时、服务端 5xx）重试；像权限不足、用户不存在这种业务错误，
+     * 重试多少次结果都一样，白等——所以 resp 不成功时直接返回。
+     *
+     * ⚠️ 最坏情况会阻塞约 3.5 秒（三段间隔之和）。这只发生在"缓存过期 + 接口刚好故障"时，
+     * 很少见。如果真遇到回调超时，把 NAME_RETRY_DELAY_MS 最后一项去掉即可。
+     */
+    private String fetchUserName(String openId) {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                GetUserResp resp = client.contact().user().get(GetUserReq.newBuilder()
+                        .userId(openId)
+                        .userIdType("open_id")
+                        .build());
+                if (resp.success() && resp.getData() != null && resp.getData().getUser() != null) {
+                    String name = resp.getData().getUser().getName();
+                    if (StringUtils.hasText(name)) {
+                        return name;
+                    }
+                }
+                log.warn("查用户姓名失败 openId={} code={} msg={}（业务错误，不重试）。"
+                                + "常见原因：应用没开通「通讯录 → 获取用户基本信息」，或该用户不在应用可用范围内",
+                        openId, resp.getCode(), resp.getMsg());
+                return "";
+            } catch (Exception e) {
+                if (attempt >= NAME_RETRY_DELAY_MS.length) {
+                    log.warn("查用户姓名异常，重试 {} 次仍失败 openId={}：{}",
+                            NAME_RETRY_DELAY_MS.length, openId, e.getMessage());
+                    return "";
+                }
+                long delay = NAME_RETRY_DELAY_MS[attempt];
+                log.warn("查用户姓名异常（{}），{}ms 后第 {} 次重试 openId={}",
+                        e.getMessage(), delay, attempt + 1, openId);
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return "";
+                }
+            }
+        }
+    }
+
+    /**
+     * 卡片上显示的操作人：**姓名 + open_id 末 6 位**。
+     *
+     * 为什么带 id 尾巴：群里可能有两个同名的人（同名同事、两个都叫"小王"的外包），
+     * 只写姓名分不清是谁点的；写完整 open_id 又太长、也没人看得懂。
+     * 末 6 位足够区分，而且和审计日志里的完整 id 能对上。
+     */
+    public String displayName(String openId) {
+        String tail = tail(openId, 6);
+        String name = userName(openId);
+        return StringUtils.hasText(name) ? name + "（" + tail + "）" : "未知用户（" + tail + "）";
+    }
+
+    private String tail(String s, int n) {
+        if (!StringUtils.hasText(s)) {
+            return "??????";
+        }
+        String t = s.trim();
+        return t.length() <= n ? t : t.substring(t.length() - n);
     }
 
     /**
@@ -166,6 +286,12 @@ public class FeishuMessageService {
             // 并发进来时，前一个线程刚刷过，直接用
             return;
         }
+        // 缓存里没命中会走 force 刷新（为了照顾刚进群的人），但要限频率：
+        // 否则一个人反复点按钮，每次都触发一次全量拉取（最多 5 页），接口压力被放大
+        if (force && now - memberLastRefreshAt < MEMBER_MIN_REFRESH_MS) {
+            return;
+        }
+        memberLastRefreshAt = now;
         Set<String> ids = new HashSet<>();
         String pageToken = null;
         try {
