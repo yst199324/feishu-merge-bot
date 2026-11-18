@@ -1,0 +1,4 @@
+# Linux 服务器上要直接执行，换行符必须是 LF
+*.sh text eol=lf
+# Windows 批处理保持 CRLF
+*.bat text eol=crlf
