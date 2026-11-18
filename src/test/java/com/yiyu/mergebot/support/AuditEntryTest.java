@@ -42,7 +42,7 @@ class AuditEntryTest {
                 + "\"targetBranch\":\"test\",\"status\":\"TO_BE_MERGED\",\"allRequirementsPass\":true}"));
         AuditEntry e = new AuditEntry("merge_ok", "杨书庭（676706）", "ou_7d8a6e6df7621556ce0d21922b676706",
                 "oc_c8db", "om_xyz123456789", "1998java/source-admin-new", "5425167", "36");
-        e.mergeRequest(mr).result("成功", "已合并进 test\n第二行说明");
+        e.title(mr.getTitle()).branches(mr.branchText()).result("成功", "已合并进 test\n第二行说明");
         String line = e.line();
 
         assertFalse(line.contains("\n"), "审计必须一行一条，不能有换行");

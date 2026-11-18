@@ -16,6 +16,7 @@ import com.lark.oapi.service.im.v1.model.ListChatReq;
 import com.lark.oapi.service.im.v1.model.ListChatResp;
 import com.lark.oapi.service.im.v1.model.ListMember;
 import com.yiyu.mergebot.config.FeishuProperties;
+import com.yiyu.mergebot.support.Texts;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -235,17 +236,9 @@ public class FeishuMessageService {
      * 末 6 位足够区分，而且和审计日志里的完整 id 能对上。
      */
     public String displayName(String openId) {
-        String tail = tail(openId, 6);
+        String tail = Texts.tail(openId, 6);
         String name = userName(openId);
         return StringUtils.hasText(name) ? name + "（" + tail + "）" : "未知用户（" + tail + "）";
-    }
-
-    private String tail(String s, int n) {
-        if (!StringUtils.hasText(s)) {
-            return "??????";
-        }
-        String t = s.trim();
-        return t.length() <= n ? t : t.substring(t.length() - n);
     }
 
     /**

@@ -12,6 +12,7 @@ import com.yiyu.mergebot.support.AuditEntry;
 import com.yiyu.mergebot.support.AuditLog;
 import com.yiyu.mergebot.support.IdempotentStore;
 import com.yiyu.mergebot.support.MrLocks;
+import com.yiyu.mergebot.support.Texts;
 import com.yiyu.mergebot.yunxiao.MrView;
 import com.yiyu.mergebot.yunxiao.YunxiaoClient;
 import com.yiyu.mergebot.yunxiao.YunxiaoException;
@@ -94,53 +95,26 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             String localId = str(value.get("mr"));
             String repoName = str(value.get("name"));
 
-            // 显示名 = 姓名 + open_id 末 6 位。群里可能有同名的人，只写姓名分不清是谁点的
-            String operator = messageService.displayName(openId);
-
-            // 一次点击对应一条审计记录，所有分支最后都写它
-            audit = new AuditEntry(act, operator, openId, chatId, messageId, repoName, repoId, localId);
+            // 先建记录，**刻意先不查姓名**：查姓名要打飞书通讯录接口，
+            // 没通过权限校验的点击不该浪费那一次调用。先用 id 末 6 位占位，通过后再补真名。
+            audit = new AuditEntry(act, "未知用户（" + tail6(openId) + "）", openId, chatId, messageId,
+                    repoName, repoId, localId);
             // 起点日志：后面每一条都带同一个 trace，能直接串起来
-            audit.step("收到点击", "act=" + act + " 操作人=" + operator + " 项目=" + repoName
-                    + " mr=" + localId + " 消息=" + messageId);
+            audit.step("收到点击", "act=" + act + " openId=" + tail6(openId)
+                    + " 项目=" + repoName + " mr=" + localId + " 消息=" + messageId);
 
-            // 人员层：白名单或本群成员。顺带把 open_id 回给对方，方便排查和加白名单
-            if (!allowed(openId)) {
-                audit.stepFail("权限校验", "该用户既不在白名单、也不在审批群");
-                auditLog.write(audit.result("拒绝", "该用户既不在白名单、也不在审批群"));
-                resp.setToast(toast("error", "你没有合并权限。你的 open_id 是 " + openId));
-                return resp;
+            if (!checkClickable(audit, resp, openId, act, repoId, localId)) {
+                return resp;   // 不通过的原因已经写进 toast、日志和审计
             }
 
-            if (!StringUtils.hasText(act) || !StringUtils.hasText(repoId) || !StringUtils.hasText(localId)) {
-                audit.stepFail("参数校验", "卡片回传的 act/repo/mr 有空值");
-                auditLog.write(audit.result("拒绝", "卡片参数缺失 act/repo/mr 有空值"));
-                resp.setToast(toast("error", "卡片参数缺失，请让提交人重新发起合并请求"));
-                return resp;
-            }
+            // 人员和参数都过了，这时才值得花一次飞书接口查姓名（有 10 分钟缓存兜着）
+            audit.operator(messageService.displayName(openId));
 
             switch (act) {
-                case "merge": {
-                    // 合并是不可逆动作，先弹确认卡片，不动代码
-                    MrView mr = yunxiao.getChangeRequest(repoId, localId);
-                    audit.mergeRequest(mr);
-                    audit.step("弹出确认卡", "状态=" + mr.getStatus() + " 分支=" + audit.getBranches());
-                    auditLog.write(audit.result("已弹确认卡", "等人点确认合并，未做任何变更"));
-                    setCard(resp, cardFactory.confirmCard(repoName, repoId, localId, mr));
-                    return resp;
-                }
-                case "cancel": {
-                    MrView mr = yunxiao.getChangeRequest(repoId, localId);
-                    audit.mergeRequest(mr);
-                    audit.step("取消合并", "卡片回到待审批");
-                    auditLog.write(audit.result("已取消", "卡片回到待审批状态，云效没有变更"));
-                    // 取消合并后把卡片换回待审批态，内容和初次发卡保持一致，
-                    // 否则会出现"刚发的卡片有提交列表、点一下取消就没了"的怪异现象
-                    setCard(resp, cardFactory.approvalCard(repoName, repoId, localId, mr,
-                            yunxiao.commitsFor(repoId, mr.getSourceBranch(), mr.getTargetBranch()),
-                            yunxiao.webUrlFor(repoName, localId, mr)));
-                    resp.setToast(toast("info", "已取消"));
-                    return resp;
-                }
+                case "merge":
+                    return showConfirmCard(resp, audit, repoName, repoId, localId);
+                case "cancel":
+                    return restoreApprovalCard(resp, audit, repoName, repoId, localId);
                 case "merge_ok":
                     return doMerge(resp, audit, repoName, repoId, localId, act);
                 case "close":
@@ -164,6 +138,62 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         }
     }
 
+    /**
+     * 点按钮的第一道闸：这个人能不能点、卡片参数全不全。
+     *
+     * 抽成一个方法是为了让 handle() 只管"分发"，不堆校验细节；
+     * 以后要加"这个仓库是否允许操作"之类的判断，只改这里一处。
+     *
+     * @return true = 可以继续往下走。false 时 toast、日志、审计都已经写好
+     */
+    private boolean checkClickable(AuditEntry audit, P2CardActionTriggerResponse resp,
+                                   String openId, String act, String repoId, String localId) {
+        if (!allowed(openId)) {
+            audit.stepFail("权限校验", "该用户既不在白名单、也不在审批群");
+            auditLog.write(audit.result("拒绝", "该用户既不在白名单、也不在审批群"));
+            resp.setToast(toast("error", "你没有合并权限。你的 open_id 是 " + openId));
+            return false;
+        }
+        if (!StringUtils.hasText(act) || !StringUtils.hasText(repoId) || !StringUtils.hasText(localId)) {
+            audit.stepFail("参数校验", "卡片回传的 act/repo/mr 有空值");
+            auditLog.write(audit.result("拒绝", "卡片参数缺失 act/repo/mr 有空值"));
+            resp.setToast(toast("error", "卡片参数缺失，请让提交人重新发起合并请求"));
+            return false;
+        }
+        return true;
+    }
+
+    /** 点「合并」：只弹确认卡，一行代码都不动。合并是不可逆动作，必须再确认一次 */
+    private P2CardActionTriggerResponse showConfirmCard(P2CardActionTriggerResponse resp, AuditEntry audit,
+                                                        String repoName, String repoId, String localId)
+            throws Exception {
+        MrView mr = yunxiao.getChangeRequest(repoId, localId);
+        audit.title(mr.getTitle()).branches(mr.branchText());
+        audit.step("弹出确认卡", "状态=" + mr.getStatus() + " 分支=" + mr.branchText());
+        auditLog.write(audit.result("已弹确认卡", "等人点确认合并，未做任何变更"));
+        setCard(resp, cardFactory.confirmCard(repoName, repoId, localId, mr));
+        return resp;
+    }
+
+    /**
+     * 点「取消」：把卡片换回待审批态。
+     *
+     * 内容和初次发卡保持一致，否则会出现"刚发的卡片有提交列表、点一下取消就没了"的怪异现象。
+     */
+    private P2CardActionTriggerResponse restoreApprovalCard(P2CardActionTriggerResponse resp, AuditEntry audit,
+                                                            String repoName, String repoId, String localId)
+            throws Exception {
+        MrView mr = yunxiao.getChangeRequest(repoId, localId);
+        audit.title(mr.getTitle()).branches(mr.branchText());
+        audit.step("取消合并", "卡片回到待审批");
+        auditLog.write(audit.result("已取消", "卡片回到待审批状态，云效没有变更"));
+        setCard(resp, cardFactory.approvalCard(repoName, repoId, localId, mr,
+                yunxiao.commitsFor(repoId, mr.getSourceBranch(), mr.getTargetBranch()),
+                yunxiao.webUrlFor(repoName, localId, mr)));
+        resp.setToast(toast("info", "已取消"));
+        return resp;
+    }
+
     private P2CardActionTriggerResponse doMerge(P2CardActionTriggerResponse resp, AuditEntry audit,
                                                 String repoName, String repoId, String localId,
                                                 String act) throws Exception {
@@ -183,6 +213,9 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             return resp;
         }
         String idemKey = dupKey(messageId, repoId, localId, act);
+        // 记录"当前正在做哪一步"。掉进 catch 时靠它把失败精确归到步骤上，
+        // 免得所有异常都被记成"合并失败"，把排查带到错误的代码位置
+        String step = "校验点击";
         try {
             // 幂等层：飞书回调超时会重推，同一张卡片的同一个动作只执行一次。
             // 命中时不能一律回"已处理"——前面那次也可能失败过，
@@ -191,51 +224,100 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                 return alreadyHandled(resp, audit, repoId, localId, true);
             }
 
-            // 状态层：卡片可能是很久以前发的，落笔前必须重查一次
+            // 状态层：卡片可能是半小时前发的，落笔前必须重查一次
+            step = "查详情";
             MrView mr = yunxiao.getChangeRequest(repoId, localId);
-            audit.mergeRequest(mr);
-            audit.step("查详情", "状态=" + mr.getStatus() + " 分支=" + audit.getBranches()
+            audit.title(mr.getTitle()).branches(mr.branchText());
+            audit.step(step, "状态=" + mr.getStatus() + " 分支=" + mr.branchText()
                     + " 冲突=" + mr.conflictText());
-            if (!mr.mergeable()) {
-                return fail(resp, audit, mr, "未执行", "状态已变化，当前是 " + mr.getStatus() + "，不能再合并");
-            }
-            if (mr.hasConflict()) {
-                return fail(resp, audit, mr, "未执行", "存在代码冲突，必须由提交人自己解决，审批人不能代解");
-            }
-            if (!mr.isAllRequirementsPass()) {
-                return fail(resp, audit, mr, "未执行", "合并卡点未全部通过（评审 / 流水线 / 评论），先去云效处理");
+
+            String reason = notMergeableReason(mr);
+            if (reason != null) {
+                return fail(resp, audit, mr, "未执行", reason);
             }
 
-            audit.step("调用云效合并接口", "mr=" + localId);
+            step = "调用云效合并接口";
+            audit.step(step, "mr=" + localId);
             yunxiao.merge(repoId, localId);
-            // 接口返回成功不等于真合上了，再查一次确认。
-            // 查不到就立刻再查一次（不加等待）——云效状态偶尔慢半拍，
-            // 但这里不能 sleep：飞书要求卡片回调尽快返回，拖太久会被判超时并重推。
-            MrView latest = yunxiao.getChangeRequest(repoId, localId);
-            if (!"MERGED".equals(latest.getStatus())) {
-                latest = yunxiao.getChangeRequest(repoId, localId);
-            }
-            if ("MERGED".equals(latest.getStatus())) {
-                audit.mergeRequest(latest).result("成功", "已合并进 " + latest.getTargetBranch());
-                audit.step("合并完成", "状态=MERGED 耗时=" + audit.costMs() + "ms");
-                auditLog.write(audit);
-                resp.setToast(toast("success", "已合并"));
-                setCard(resp, cardFactory.resultCard(repoName, latest.getTitle(), true, operator,
-                        "已合并进 " + latest.getTargetBranch(), latest, latest.getDetailUrl()));
-            } else {
-                return fail(resp, audit, latest, "失败", "合并接口返回成功，但状态仍是 " + latest.getStatus());
-            }
-            return resp;
+
+            step = "确认合并结果";
+            return finishMerge(resp, audit, repoName, repoId, localId, operator);
         } catch (YunxiaoException e) {
-            // 这次没成功（超时 / 网络 / 云效报错），把登记撤掉，让审批人能立刻重试。
-            // 不撤的话他会被告知"重复点击"，其实一次都没执行。
-            idempotent.forget(idemKey);
-            // 带 trace + 堆栈，用来定位具体是哪个调用/哪行出的问题
-            audit.stepError("调用云效合并接口", rootMessage(e), e);
+            // 用 step 变量把失败精确归到"哪一步"，比给每段套 try-catch 干净，
+            // 也不会出现"查详情失败却记成合并失败"这种把排查带偏的情况
+            audit.stepError(step, rootMessage(e), e);
+            // 确认阶段失败时**不撤销**幂等登记：这时候很可能已经合上了，
+            // 让用户重试等于又合一次；保留登记，重试时会给出"当前状态"的准确结论
+            if (!"确认合并结果".equals(step)) {
+                idempotent.forget(idemKey);
+            }
+            if ("查详情".equals(step)) {
+                return fail(resp, audit, MrView.of(null), "失败", "查合并请求详情失败：" + rootMessage(e));
+            }
+            if ("确认合并结果".equals(step)) {
+                return fail(resp, audit, MrView.of(null), "失败",
+                        "合并接口已返回成功，但确认状态时出错：" + rootMessage(e) + "，请去云效确认是否已合并");
+            }
             return failOnYunxiao(resp, audit, repoId, localId, e);
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * 合并后的收尾：确认状态、写审计、把卡片换成结果卡。
+     *
+     * 抽出来的原因：doMerge 已经要管锁、幂等、状态校验、调接口，
+     * 再把"确认 + 出结果"塞进去就超过一屏了，读的人容易漏掉分支。
+     */
+    private P2CardActionTriggerResponse finishMerge(P2CardActionTriggerResponse resp, AuditEntry audit,
+                                                    String repoName, String repoId, String localId,
+                                                    String operator) throws Exception {
+        MrView latest = confirmMerged(repoId, localId);
+        if (!"MERGED".equals(latest.getStatus())) {
+            return fail(resp, audit, latest, "失败", "合并接口返回成功，但状态仍是 " + latest.getStatus());
+        }
+        audit.title(latest.getTitle()).branches(latest.branchText())
+                .result("成功", "已合并进 " + latest.getTargetBranch());
+        audit.step("合并完成", "状态=MERGED 耗时=" + audit.costMs() + "ms");
+        auditLog.write(audit);
+        resp.setToast(toast("success", "已合并"));
+        setCard(resp, cardFactory.resultCard(repoName, latest.getTitle(), true, operator,
+                "已合并进 " + latest.getTargetBranch(), latest, latest.getDetailUrl()));
+        return resp;
+    }
+
+    /**
+     * 合并之后确认状态。
+     *
+     * 云效状态偶尔慢半拍，第一次查不到就立刻再查一次。
+     * **不能 sleep 等**：飞书要求卡片回调尽快返回，拖久了会被判超时并重推。
+     */
+    private MrView confirmMerged(String repoId, String localId) {
+        MrView latest = yunxiao.getChangeRequest(repoId, localId);
+        if (!"MERGED".equals(latest.getStatus())) {
+            latest = yunxiao.getChangeRequest(repoId, localId);
+        }
+        return latest;
+    }
+
+    /**
+     * 为什么不能合并；能合并返回 null。
+     *
+     * 规则集中在一处，以后加"目标分支白名单"这类限制只改这里，
+     * 不会出现"一处加了、另一处忘了"。
+     */
+    private String notMergeableReason(MrView mr) {
+        if (!mr.mergeable()) {
+            return "状态已变化，当前是 " + mr.getStatus() + "，不能再合并";
+        }
+        if (mr.hasConflict()) {
+            return "存在代码冲突，必须由提交人自己解决，审批人不能代解";
+        }
+        if (!mr.isAllRequirementsPass()) {
+            return "合并卡点未全部通过（评审 / 流水线 / 评论），先去云效处理";
+        }
+        return null;
     }
 
     private P2CardActionTriggerResponse doClose(P2CardActionTriggerResponse resp, AuditEntry audit,
@@ -253,19 +335,23 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             return resp;
         }
         String idemKey = dupKey(messageId, repoId, localId, act);
+        String step = "校验点击";
         try {
             if (!idempotent.firstTime(idemKey)) {
                 return alreadyHandled(resp, audit, repoId, localId, false);
             }
+            step = "查详情";
             MrView mr = yunxiao.getChangeRequest(repoId, localId);
-            audit.mergeRequest(mr);
-            audit.step("查详情", "状态=" + mr.getStatus() + " 分支=" + audit.getBranches());
+            audit.title(mr.getTitle()).branches(mr.branchText());
+            audit.step(step, "状态=" + mr.getStatus() + " 分支=" + mr.branchText());
             if ("CLOSED".equals(mr.getStatus()) || "MERGED".equals(mr.getStatus())) {
                 return fail(resp, audit, mr, "未执行", "已经是 " + mr.getStatus() + " 状态，不能再拒绝");
             }
-            audit.step("调用云效关闭接口", "mr=" + localId);
+            step = "调用云效关闭接口";
+            audit.step(step, "mr=" + localId);
             MrView after = yunxiao.close(repoId, localId);
-            audit.mergeRequest(after).result("成功", "已拒绝（关闭）该合并请求");
+            audit.title(after.getTitle()).branches(after.branchText())
+                    .result("成功", "已拒绝（关闭）该合并请求");
             audit.step("已拒绝", "状态=" + after.getStatus() + " 耗时=" + audit.costMs() + "ms");
             auditLog.write(audit);
             resp.setToast(toast("success", "已拒绝"));
@@ -273,9 +359,12 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                     "已拒绝（关闭）该合并请求", after, mr.getDetailUrl()));
             return resp;
         } catch (YunxiaoException e) {
-            // 同上：没成功就撤销登记，允许立刻重试
+            audit.stepError(step, rootMessage(e), e);
+            // 没成功就撤销登记，允许立刻重试
             idempotent.forget(idemKey);
-            audit.stepError("调用云效关闭接口", rootMessage(e), e);
+            if ("查详情".equals(step)) {
+                return fail(resp, audit, MrView.of(null), "失败", "查合并请求详情失败：" + rootMessage(e));
+            }
             return failOnYunxiao(resp, audit, repoId, localId, e);
         } finally {
             lock.unlock();
@@ -315,7 +404,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         String target = blank(mr.getTargetBranch(), "目标分支");
         String operator = audit.getOperator();
 
-        audit.mergeRequest(mr).result("重复",
+        audit.title(mr.getTitle()).branches(mr.branchText()).result("重复",
                 done ? "此前已经处理完成，本次点击没有重复执行"
                         : "重复点击，未重复执行，当前状态 " + blank(mr.getStatus(), "未知"));
         auditLog.write(audit);
@@ -340,7 +429,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
      */
     private P2CardActionTriggerResponse fail(P2CardActionTriggerResponse resp, AuditEntry audit,
                                              MrView mr, String result, String message) throws Exception {
-        audit.mergeRequest(mr).result(result, message);
+        audit.title(mr.getTitle()).branches(mr.branchText()).result(result, message);
         auditLog.write(audit);
         // 每个失败分支都必须留下一条带 trace 的日志，
         // 这样"为什么没合上"能直接从日志看出来，不用靠猜
@@ -472,6 +561,11 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
 
     private String str(Object o) {
         return o == null ? "" : String.valueOf(o);
+    }
+
+    /** 取 open_id 末 6 位。还没查到姓名时先用它标识"是谁点的"，不额外打接口 */
+    private String tail6(String s) {
+        return Texts.tail(s, 6);
     }
 
     private String blank(String s, String fallback) {

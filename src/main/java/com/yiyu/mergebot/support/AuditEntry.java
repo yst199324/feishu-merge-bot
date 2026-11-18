@@ -1,6 +1,5 @@
 package com.yiyu.mergebot.support;
 
-import com.yiyu.mergebot.yunxiao.MrView;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
@@ -30,7 +29,7 @@ public class AuditEntry {
     /** 动作：merge_ok / close / cancel */
     private final String action;
     /** 显示名，形如「杨书庭（676706）」；查不到人是「未知用户（676706）」 */
-    private final String operator;
+    private String operator;
     /** 完整 open_id，审计时用来和飞书后台对账 */
     private final String openId;
     private final String chatId;
@@ -78,17 +77,35 @@ public class AuditEntry {
         return t.length() <= n ? t : t.substring(t.length() - n);
     }
 
-    /** 从查到的合并请求补上标题和分支，让日志和审计都看得懂"合了什么" */
-    public AuditEntry mergeRequest(MrView mr) {
-        if (mr == null) {
-            return this;
+    /**
+     * 补上"合了什么"：标题和分支。
+     *
+     * 这里刻意**不接收 MrView**——审计组件是通用的支撑类，
+     * 依赖业务模型会让依赖方向反过来（支撑层指向业务层）。
+     * 需要展示什么文本，由调用方从自己的模型里取好再传进来。
+     */
+    public AuditEntry title(String title) {
+        if (!StringUtils.hasText(this.title)) {
+            this.title = nz(title);
         }
-        if (!StringUtils.hasText(title)) {
-            title = nz(mr.getTitle());
+        return this;
+    }
+
+    public AuditEntry branches(String branches) {
+        if (!StringUtils.hasText(this.branches)) {
+            this.branches = nz(branches);
         }
-        if (!StringUtils.hasText(branches)) {
-            branches = nz(mr.getSourceBranch()) + " -> " + nz(mr.getTargetBranch());
-        }
+        return this;
+    }
+
+    /**
+     * 补上操作人显示名。
+     *
+     * 只用于"先过了权限校验、再去查姓名"的顺序：姓名查询要打飞书接口，
+     * 没通过校验的点击不该浪费那一次调用，所以先建记录、通过校验后再补名字。
+     */
+    public AuditEntry operator(String operator) {
+        this.operator = nz(operator);
         return this;
     }
 

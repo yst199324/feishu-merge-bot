@@ -146,4 +146,13 @@ public class MrView {
     public String requirementsText() {
         return allRequirementsPass ? "全部通过" : "未全部通过（评审/流水线等）";
     }
+
+    /** 分支展示文本，形如 `dev订单 -> test`。日志、审计、卡片都用这一个格式，避免各处各拼一套 */
+    public String branchText() {
+        return blankTo(sourceBranch, "未知") + " -> " + blankTo(targetBranch, "未知");
+    }
+
+    private static String blankTo(String s, String fallback) {
+        return s == null || s.isEmpty() ? fallback : s;
+    }
 }
