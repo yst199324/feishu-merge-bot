@@ -218,8 +218,11 @@ public class FeishuMessageService {
                 return "接口正常，能查到姓名";
             case 99991672:
             case 99991663:
-                return "应用没开通「通讯录 → 获取用户基本信息」。开发者后台 → 权限管理，申请 "
-                        + "contact:user.base:readonly，然后创建版本并发布（不发版不生效）";
+                return "应用没开通通讯录读取权限。开发者后台 → 权限管理，开通下面任意一个："
+                        + "contact:contact.base:readonly（推荐）、contact:contact.access_as_app、"
+                        + "contact:contact.readonly、contact:contact.readonly_as_app，"
+                        + "然后创建版本并发布（不发版不生效）。"
+                        + "注意不要跟 contact:user.base:readonly 搞混——那是另一条接口的权限，开它没用";
             case 41050:
                 return "应用无权访问这个用户。查两处：①权限是否已开通并发布 ②开发者后台 → 应用可用范围是否包含这个人";
             case 40004:
