@@ -1,0 +1,130 @@
+server:
+  port: 8081
+  # 配好 Nginx 反代、只暴露 /webhook/* 之后，把下面这行的注释去掉，
+  # 让 8081 只监听本机，别让它直接对公网（多一层保护）。
+  # address: 127.0.0.1
+
+logging:
+  level:
+    com.yiyu.mergebot: DEBUG
+
+mergebot:
+  # 排错接口（/test/*）的开关。
+  # 本地调试设 true；部署到公网后**必须改成 false**，否则任何人都能调它发卡片。
+  # 配了 Nginx 反代的话，/test/* 本来就被挡在外面，但双保险更省心。
+  test-endpoints: true
+
+  # 是否把云效推过来的 webhook 报文**原文整段**打进日志（默认 true）。
+  # 开着的好处：字段名对不上、事件被忽略这类问题，看一眼原文就能定位，
+  # 不用再靠猜或让云效重推。报文一般 2~5 KB，一天几十条也不占地方。
+  # 注意：报文里有提交人的姓名和邮箱，如果日志要外发，改成 false 只留摘要。
+  log-webhook-raw: true
+
+  # ---------------------------------------------------------------- 轮询
+  # 作用：不用开公网端口，服务自己定时去云效问"有没有新的待合并请求"。
+  #
+  # 三种触发方式选一种即可：
+  #   A. 轮询（本节）       —— 不需要公网、不需要流水线，本机就能跑，延迟约 1 分钟
+  #   B. 云效代码库 Webhook —— 需要公网 HTTPS，毫秒级，报文最完整
+  #   C. 云效流水线调接口   —— 需要公网，且拿不到合并请求编号
+  #
+  # 推荐顺序：B（有公网就走它）。没有公网就开 A，功能完全一样，只是慢一分钟。
+  # 两者可以同时开，但同一个请求你会收到两条消息，别长期并行。
+  poll:
+    # 打开后，服务启动 15 秒会自动扫第一轮
+    enabled: false
+
+    # 轮询间隔（毫秒）。60 秒对周末场景完全够
+    interval-ms: 60000
+
+    # 要盯的仓库 ID 列表（不是仓库名）。
+    # 从哪拿：打开云效任意一个合并请求，URL 里 .../repositories/2813489/changeRequests/12
+    #         中间那串数字就是仓库 ID
+    repo-ids: []
+    #   - "2813489"
+
+    # 只关心合到这些分支的请求。留空 = 全部。
+    # 填 test 就只推合到 test 的，合到 prod 的完全不理
+    target-branches: []
+    #   - "test"
+
+    # 仓库 ID -> 显示名，卡片上好看一点；不配就直接显示 ID
+    repo-names: {}
+    #   "2813489": store-web-new
+
+feishu:
+  # 开发者后台 -> 凭证与基础信息
+  app-id: cli_aa70056631b81bb4
+  app-secret: "在这里粘贴 App Secret"
+
+  # 接收审批卡片的群 chat_id（oc_ 开头）
+  # 校验方法：把机器人拉进群后调 GET /test/chats，在返回列表里找这个值
+  chat-id: "oc_c8dbba44830492d93d856ed7a4705ddc"
+
+  # 允许点按钮的人，每行一个，ou_ 开头。
+  #
+  # 一般不用填。下面开着 allow-group-members，审批群里的人都能点，加人减人自动生效。
+  # 这个白名单只在两种情况下用：
+  #   1. 有人不在审批群，但需要能操作（比如你休假时同事临时接管）
+  #   2. 想把权限收窄到固定几个人：把 allow-group-members 改成 false
+  #
+  # 三个必须知道的点：
+  #  1. open_id 是**按应用**算的。同一个人在别的飞书应用里的 open_id 跟这里不一样，
+  #     必须用本应用（cli_aa70056631b81bb4）拿到的那个，抄错了会一直提示没权限。
+  #  2. 不是 user_id（员工号），也不是 union_id。填错类型同样一直拒绝。
+  #  3. 改完这个文件必须重启服务才生效（这个文件不会热加载）。
+  allowed-open-ids: []
+  # 要填的话长这样（把 [] 换成下面几行，注意缩进）：
+  # allowed-open-ids:
+  #   - "ou_aaaaaaaaaaaaaaaaaaaaaaaaaa"
+  #   - "ou_bbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+  # 除了白名单，是否允许"审批群里的成员"也能点。默认开启。
+  # 开启后不用维护名单；关掉就必须把每个人写进上面的 allowed-open-ids。
+  # 依赖应用权限「查看群成员」或「获取群组信息」——没开的话所有人都点不动（失败时一律拒绝）。
+  allow-group-members: true
+
+  # 群成员判断结果的缓存秒数。只缓存"确认是成员"的结论，
+  # 所以刚被移出群的人，最迟这么久之后点不动；刚被拉进群的人立刻能点。
+  group-member-cache-seconds: 300
+
+yunxiao:
+  # 云效服务接入点。中心版/Region 版都用这个域名
+  domain: https://openapi-rdc.aliyuncs.com
+
+  # 云效网页版地址。**它和上面的 domain 不是一回事**：
+  #   domain  = 程序调接口用的（openapi-rdc.aliyuncs.com）
+  #   web-base = 人用浏览器打开的（codeup.aliyun.com）
+  # 卡片上"合并请求：https://..."那一行和「在云效打开」按钮都用它拼。
+  # 只有云效详情接口没返回 detailUrl 时才会用到，一般不用改。
+  web-base: https://codeup.aliyun.com
+
+  # 个人访问令牌（pt- 开头）。
+  # 强烈建议用单独的"合并机器人"账号生成，别用你自己的，
+  # 否则云效审计日志里所有合并记录都算你本人操作
+  token: "pt-xxxxxxxxxxxxxxxx"
+
+  # 组织 ID。你的是 607f9fbe429bb594fdddc638，已填好。
+  # 留空会走 Region 版路径，中心版组织会查不到数据
+  org-id: "607f9fbe429bb594fdddc638"
+
+  # 合并方式：ff-only / no-fast-forward / squash / rebase
+  merge-type: no-fast-forward
+
+  # 合并后是否删除源分支
+  remove-source-branch: false
+
+  # 云效 Webhook 里填的 Secret Token，接收端用它校验来源。
+  # **留空服务不启动**（这是故意的：空值等于门没锁，任何人都能 POST 进来发卡片）。
+  # 填任意随机字符串，比如 mrb-store-web-2026-abc123，
+  # 然后去云效代码库 -> 设置 -> Webhooks 里填同一个值。
+  webhook-token: "在这里填一个随机字符串"
+
+  # 只有走「云效流水线 -> 调 /webhook/flow」这条路才需要配：
+  # 流水线的内置变量里没有仓库 ID，只给仓库名，这里把名字映射成 ID。
+  # 走代码库 Webhook（/webhook/yunxiao）的话不用配这一项。
+  #
+  # 仓库 ID 从哪来：云效 Webhook 的投递记录里能看到 project.id，
+  # 或者打开一个合并请求，URL 里的那串数字就是。
+  # repos:
+  #   store-web-new: "把仓库ID填这里"

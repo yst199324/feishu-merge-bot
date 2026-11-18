@@ -1,0 +1,14 @@
+target/
+logs/
+*.log
+.idea/
+*.iml
+
+# 本地临时文件（maven classpath 导出）
+cp.txt
+
+# 部署产物：jar 是构建生成的，不入库（本地 mvn package 或看 deploy 说明）
+deploy/*.jar
+
+# 真实部署配置含密钥，不入库。模板见 application.yml.example
+deploy/application.yml

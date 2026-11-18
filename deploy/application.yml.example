@@ -1,0 +1,60 @@
+# ============================================================
+# 部署配置模板
+#
+# 用法：把这个文件复制一份，改名为 application.yml，填好下面
+# 标了「必填」的三项，和 merge-bot.jar 放同一目录。
+# 启动脚本会自动加载（--spring.config.additional-location），
+# 改完重启就生效，不用重新打包。
+#
+# 真实的 application.yml 含密钥，已被 .gitignore 排除，
+# 不会进仓库——别把它删掉这条忽略规则。
+# ============================================================
+
+server:
+  # 服务监听端口。云效 Webhook 的 URL 要填 http://你的公网IP:这个端口/webhook/yunxiao
+  port: 18123
+
+feishu:
+  # 开发者后台 -> 凭证与基础信息（必填）
+  app-id: cli_你的应用ID
+  app-secret: "你的 App Secret"        # 必填
+
+  # 接收审批卡片的群。校验方法：开 /test/* 后调 GET /test/chats 在列表里找
+  chat-id: "oc_审批群ID"
+
+  # 允许审批群里的成员点按钮（加人减人自动生效，不用维护名单）。
+  # 前提：应用要有「查看群成员」权限，并且已发布版本。
+  allow-group-members: true
+
+  # 固定白名单，和"群成员"是或关系。一般不用填。
+  # open_id 从哪来：在群里故意点一次卡片，气泡会显示"你的 open_id 是 ou_xxx"
+  allowed-open-ids: []
+
+  # 群成员缓存秒数。退群的人最迟这么久之后点不动
+  group-member-cache-seconds: 300
+
+yunxiao:
+  # 个人访问令牌，pt_ 开头（必填）。云效 -> 头像 -> 个人设置 -> 个人访问令牌
+  # 默认 7 天过期，创建时把到期时间选长一点
+  token: "pt_你的令牌"
+
+  # 云效组织 ID
+  org-id: "你的组织ID"
+
+  # 云效网页版地址，卡片上"合并请求：https://..."那一行用它拼
+  web-base: https://codeup.aliyun.com
+
+  # 云效 Webhook 里填的 Secret Token，两边必须完全一致（必填）
+  webhook-token: "自己定一个随机字符串"
+
+mergebot:
+  # 公网部署必须 false，否则任何人都能调 /test/* 让机器人发卡片
+  test-endpoints: false
+
+  # 把云效推送的报文原文整段打进日志，排错全靠它。
+  # 报文里有提交人姓名和邮箱，日志要外发时改成 false
+  log-webhook-raw: true
+
+  poll:
+    # 走 Webhook 触发，轮询关掉。服务没有公网入口时才改 true
+    enabled: false

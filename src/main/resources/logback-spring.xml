@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  日志配置
+  ==================================================================
+  和你其他项目（1998-hi-gateway / source-admin-new）保持同一套风格：
+    - 按级别拆文件：debug / info / warn / error
+    - 每天滚动，历史文件压 gz
+    - 保留 30 天
+    - 异步写入，不阻塞业务线程
+
+  和那些项目唯一的差别：去掉了 SkyWalking 的 TraceIdPatternLogbackLayout。
+  本项目没有引入 skywalking 的依赖，照抄那个 layout 会启动直接报
+  ClassNotFoundException。需要 traceId 的时候再引依赖。
+
+  日志位置：jar 同级目录的 logs/ 下（启动脚本会把工作目录切到 jar 所在目录）
+  想换位置：启动时加 -DLOG_PATH=/your/path 即可，不用改这个文件。
+  ==================================================================
+-->
+<configuration scan="true" scanPeriod="60 seconds">
+
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- 日志目录。默认相对路径 ./logs，即 jar 同级目录 -->
+    <property name="LOG_PATH" value="${LOG_PATH:-./logs}"/>
+    <property name="APP_NAME" value="merge-bot"/>
+    <property name="LOG_FILE" value="${LOG_PATH}/${APP_NAME}"/>
+
+    <!-- 保留天数 -->
+    <property name="MAX_HISTORY" value="30"/>
+    <!-- 单个级别日志的总上限，防止异常刷日志把磁盘打满（30 天 × 四个级别） -->
+    <property name="TOTAL_SIZE_CAP" value="2GB"/>
+
+    <!-- 控制台带颜色；文件里用纯文本，避免 ANSI 转义码污染日志文件 -->
+    <property name="CONSOLE_PATTERN"
+              value="%clr(%d{yyyy-MM-dd HH:mm:ss.SSS,CTT}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}) %clr(${PID:- }){magenta} %clr(---){faint} %clr([%t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"/>
+    <property name="FILE_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS,CTT} ${LOG_LEVEL_PATTERN:-%5p} ${PID:- } --- [%t] %-40.40logger{39} : %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"/>
+
+    <!-- ============================ 控制台 ============================ -->
+    <appender name="consoleAppender" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- ============================ DEBUG ============================ -->
+    <!-- 只收 DEBUG 级别的明细。业务包 com.yiyu.mergebot 设为 DEBUG 后写这里。
+         框架自身的 DEBUG（Spring、飞书 SDK）没开，所以这个文件很干净。 -->
+    <appender name="debugAppender" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_FILE}-debug.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_FILE}-debug.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <MaxHistory>${MAX_HISTORY}</MaxHistory>
+            <totalSizeCap>${TOTAL_SIZE_CAP}</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>DEBUG</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+    </appender>
+
+    <!-- ============================= INFO ============================= -->
+    <!-- 日常看这个文件：INFO 及以上全收，一次合并请求从收到到点完的完整链路都在这 -->
+    <appender name="infoAppender" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_FILE}-info.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_FILE}-info.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <MaxHistory>${MAX_HISTORY}</MaxHistory>
+            <totalSizeCap>${TOTAL_SIZE_CAP}</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>INFO</level>
+        </filter>
+    </appender>
+
+    <!-- ============================= WARN ============================= -->
+    <!-- 只有 WARN：无权限点击、云效返回异常、拉群成员失败之类 -->
+    <appender name="warnAppender" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_FILE}-warn.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_FILE}-warn.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <MaxHistory>${MAX_HISTORY}</MaxHistory>
+            <totalSizeCap>${TOTAL_SIZE_CAP}</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>WARN</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+    </appender>
+
+    <!-- ============================= ERROR ============================ -->
+    <appender name="errorAppender" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_FILE}-error.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_FILE}-error.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <MaxHistory>${MAX_HISTORY}</MaxHistory>
+            <totalSizeCap>${TOTAL_SIZE_CAP}</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>ERROR</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+    </appender>
+
+    <!-- ============================= 异步 ============================= -->
+    <!-- discardingThreshold=0：队列满 20% 就开始丢 INFO 以下的，保证 WARN/ERROR 一定落盘 -->
+    <appender name="async-debug-appender" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="debugAppender"/>
+    </appender>
+
+    <appender name="async-info-appender" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="infoAppender"/>
+    </appender>
+
+    <appender name="async-warn-appender" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="warnAppender"/>
+    </appender>
+
+    <appender name="async-error-appender" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="errorAppender"/>
+    </appender>
+
+    <!-- ============================ 级别 ============================== -->
+
+    <!-- 框架统一压到 INFO，别让调用细节淹掉业务日志 -->
+    <logger name="org.springframework" level="INFO"/>
+    <logger name="org.apache.catalina" level="INFO"/>
+    <logger name="com.lark.oapi" level="INFO"/>
+    <logger name="com.aliyun" level="INFO"/>
+
+    <!-- 自己的代码开 DEBUG：一次点击走了哪些校验分支，都要能看到 -->
+    <logger name="com.yiyu.mergebot" level="DEBUG"/>
+
+    <root level="INFO">
+        <appender-ref ref="consoleAppender"/>
+        <appender-ref ref="async-debug-appender"/>
+        <appender-ref ref="async-info-appender"/>
+        <appender-ref ref="async-warn-appender"/>
+        <appender-ref ref="async-error-appender"/>
+    </root>
+
+</configuration>
