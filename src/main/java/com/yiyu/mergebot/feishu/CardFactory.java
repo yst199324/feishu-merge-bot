@@ -7,6 +7,7 @@ import com.yiyu.mergebot.yunxiao.MrView;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -80,12 +81,14 @@ public class CardFactory {
 
         elements.add(buttons(mergeBtn, button("拒绝", "danger", closeValue)));
 
-        // 云效链接。**纯文本单独一行**是故意的：
-        // 手机上点按钮只能在本机浏览器打开，想"发到电脑上接着看"就得能复制，
-        // 而按钮上的文字是复制不了的，只有正文里的链接可以长按复制。
+        // 云效按钮 + 底部一行灰字链接。
+        //
+        // 为什么不把 URL 单列一行放在正文：太占地方，而且大部分时候没人复制。
+        // 但也不能完全去掉——手机上点按钮只能在本机浏览器打开，
+        // 想"发到电脑上接着看"就得能复制，而按钮上的文字复制不了，只有正文文字可以长按复制。
+        // 折中放在最底部灰字里：不干扰阅读，需要时还能长按。
         String url = blank(webUrl, mr == null ? "" : blank(mr.getDetailUrl(), ""));
         if (!url.isEmpty()) {
-            elements.add(markdown("合并请求：" + url));
             elements.add(linkButton("在云效打开", "default", url));
         }
 
@@ -93,20 +96,20 @@ public class CardFactory {
                 + mr.conflictText() + "；卡点 " + mr.requirementsText()
                 + behindHint(mr) + "</font>"));
 
+        if (!url.isEmpty()) {
+            elements.add(markdown("<font color='grey'>云效链接（长按可复制）：" + esc(url) + "</font>"));
+        }
+
         // 标题放 header 大字位置。
         //
         // 为什么不是把项目名放 header：群消息列表只显示这一行，
         // 而"这次要合的是什么改动"（标题）比"哪个仓库"更决定要不要点开。
         // 项目名移到正文第一行，点开就看见，多个项目共群也不会混。
-        // 标题为空时才回落到项目名——否则会出来一张"待审批 · （无标题）"，
-        // 群里完全看不出是哪个项目提的。
+        // 前面加「待审批 ·」是为了在一堆卡片里一眼看出哪张还没处理。
         String mrTitle = mr == null ? "" : blank(mr.getTitle(), "");
-        String headTitle;
-        if (!mrTitle.isEmpty()) {
-            headTitle = "待审批 · " + shorten(mrTitle, 24);
-        } else if (!blank(repoName, "").isEmpty()) {
-            headTitle = "待审批 · " + shorten(repoName, 24);
-        } else {
+        String headTitle = headOf("待审批", mrTitle, repoName);
+        if ("待审批".equals(headTitle)) {
+            // 标题和项目名都是空的，给个能看懂的兜底
             headTitle = "合并请求待审批";
         }
 
@@ -188,27 +191,72 @@ public class CardFactory {
     }
 
     /** 结果卡片：操作完成后回写，把按钮换成结论，避免重复点击 */
-    public String resultCard(String repoName, String taskTitle, boolean success, String operator,
+    /**
+     * 结果卡：把一次操作的结果回写到卡片上。
+     *
+     * 四个设计点，都是踩过坑之后定下来的：
+     *  1. **header 是「结果 · 标题」**。群消息列表只显示这一行，
+     *     以前只写"操作成功"，刷过去之后完全不知道是哪条请求被合了；
+     *  2. **已合并绿、已拒绝灰、失败红**。拒绝是正常决策不是异常，不能用黄/红；
+     *  3. **正文第一行是结果**（加粗+着色），紧跟着是完整标题——
+     *     header 里的标题会被截断到 24 字，正文这条给全的；
+     *  4. **URL 只出现在底部灰字里**，不占正文版面，需要时还能长按复制。
+     *
+     * @param kind   这次是什么结果，决定头部文字和颜色
+     * @param message 结果说明，如「已合并进 test」
+     */
+    public String resultCard(String repoName, String taskTitle, ResultKind kind, String operator,
                              String message, MrView mr, String detailUrl) {
         List<Object> elements = new ArrayList<>();
+
         StringBuilder sb = new StringBuilder();
-        sb.append("**").append(esc(taskTitle)).append("**\n");
+        // 结果行放最前面：打开卡片第一眼要看的是"成没成、合到哪"
+        sb.append("**<font color='").append(kind.getColor()).append("'>")
+                .append(esc(message)).append("</font>**\n");
+        // 完整标题。header 里是截断版，这里给全的，长标题也能看全
+        if (!blank(taskTitle, "").isEmpty()) {
+            sb.append("**").append(esc(taskTitle)).append("**\n");
+        }
+        sb.append("\n");
+
         sb.append("项目：").append(esc(blank(repoName, "未知"))).append("\n");
         if (mr != null) {
-            sb.append("分支：").append(esc(mr.getSourceBranch()))
-                    .append(" → ").append(esc(mr.getTargetBranch())).append("\n");
-            sb.append("发起人：").append(esc(mr.getAuthorName())).append("\n");
-            sb.append("发起时间：").append(esc(formatTime(mr.getCreatedAt()))).append("\n");
+            sb.append("分支：").append(esc(blank(mr.getSourceBranch(), "未知")))
+                    .append(" → **").append(esc(blank(mr.getTargetBranch(), "未知"))).append("**\n");
+            // 发起时间和发起人并一行，省一行版面
+            sb.append("发起人：").append(esc(blank(mr.getAuthorName(), "未知")))
+                    .append(" · ").append(esc(shortTime(mr.getCreatedAt()))).append("\n");
         }
-        sb.append("结果：").append(esc(message)).append("\n");
-        sb.append("操作人：").append(esc(operator));
+        // 谁在什么时候处理的。以前只有发起时间，回看时对不上"是哪次点的"
+        sb.append("处理：").append(esc(blank(operator, "未知")))
+                .append(" · ").append(esc(nowText()));
         elements.add(markdown(sb.toString()));
 
-        if (detailUrl != null && !detailUrl.isEmpty()) {
-            elements.add(linkButton("去云效查看", "default", detailUrl));
+        String url = blank(detailUrl, mr == null ? "" : blank(mr.getDetailUrl(), ""));
+        if (!url.isEmpty()) {
+            elements.add(linkButton("去云效查看", "default", url));
+            elements.add(markdown("<font color='grey'>云效链接（长按可复制）：" + esc(url) + "</font>"));
         }
 
-        return toJson(card(success ? "green" : "red", success ? "操作成功" : "操作未完成", elements));
+        return toJson(card(kind.getColor(), headOf(kind.getLabel(), taskTitle, repoName), elements));
+    }
+
+    /**
+     * header 文案：「状态 · 标题」。
+     *
+     * 标题为空回落到项目名；两个都空就只显示状态。
+     * 为什么一定要带标题：群消息列表只显示这一行，只写状态等于没说是哪条请求。
+     * 为什么截断到 24 字：飞书 header 一行放不下太长，会换行或被硬切，看起来像渲染坏了。
+     */
+    private String headOf(String status, String title, String repoName) {
+        String t = blank(title, "");
+        int max = 24;
+        if (t.isEmpty()) {
+            // 回落到项目名时放宽到 30：项目名是标识，截掉一个字母都会看着像出错了
+            t = blank(repoName, "");
+            max = 30;
+        }
+        return t.isEmpty() ? status : status + " · " + shorten(t, max);
     }
 
     // ---------------------------------------------------------------- 内部
@@ -372,6 +420,27 @@ public class CardFactory {
     }
 
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+
+    /** 结果卡里用短格式：一群人看群消息，年份没什么用，省出来的位置给别的信息 */
+    private static final DateTimeFormatter SHORT_TIME_FMT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
+
+    /** 卡片生成时刻，即"处理时间"。卡片是同步渲染的，和真正处理完的时间差在毫秒级 */
+    private String nowText() {
+        return LocalDateTime.now().format(SHORT_TIME_FMT);
+    }
+
+    /** 把云效时间转成短格式（MM-dd HH:mm），解析不出来时退回原样 */
+    private String shortTime(String raw) {
+        String full = formatTime(raw);
+        if ("未知".equals(full)) {
+            return full;
+        }
+        try {
+            return LocalDateTime.parse(full, TIME_FMT).format(SHORT_TIME_FMT);
+        } catch (Exception ignore) {
+            return full;
+        }
+    }
 
     /**
      * 把云效返回的时间变成群里看得懂的样子。

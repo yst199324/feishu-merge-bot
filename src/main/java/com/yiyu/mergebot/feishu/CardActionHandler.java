@@ -282,7 +282,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         audit.step("合并完成", "状态=MERGED 耗时=" + audit.costMs() + "ms");
         auditLog.write(audit);
         resp.setToast(toast("success", "已合并"));
-        setCard(resp, cardFactory.resultCard(repoName, latest.getTitle(), true, operator,
+        setCard(resp, cardFactory.resultCard(repoName, latest.getTitle(), ResultKind.MERGED, operator,
                 "已合并进 " + latest.getTargetBranch(), latest, latest.getDetailUrl()));
         return resp;
     }
@@ -355,7 +355,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             audit.step("已拒绝", "状态=" + after.getStatus() + " 耗时=" + audit.costMs() + "ms");
             auditLog.write(audit);
             resp.setToast(toast("success", "已拒绝"));
-            setCard(resp, cardFactory.resultCard(repoName, mr.getTitle(), true, operator,
+            setCard(resp, cardFactory.resultCard(repoName, mr.getTitle(), ResultKind.CLOSED, operator,
                     "已拒绝（关闭）该合并请求", after, mr.getDetailUrl()));
             return resp;
         } catch (YunxiaoException e) {
@@ -401,23 +401,34 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                                                        boolean merging) throws Exception {
         MrView mr = safeGet(repoId, localId);
         boolean done = merging ? "MERGED".equals(mr.getStatus()) : "CLOSED".equals(mr.getStatus());
-        String target = blank(mr.getTargetBranch(), "目标分支");
         String operator = audit.getOperator();
+        String target = blank(mr.getTargetBranch(), "目标分支");
 
-        audit.title(mr.getTitle()).branches(mr.branchText()).result("重复",
-                done ? "此前已经处理完成，本次点击没有重复执行"
-                        : "重复点击，未重复执行，当前状态 " + blank(mr.getStatus(), "未知"));
+        if (!done) {
+            // 上次没成：把卡片恢复成待审批态（带按钮），让用户能立刻再点。
+            // 不能给结果卡——那样按钮就没了，用户只能干等 30 分钟让幂等过期，或者去云效手工合。
+            audit.title(mr.getTitle()).branches(mr.branchText())
+                    .result("未执行", "重复点击且上次未生效，卡片已恢复为待审批；当前状态 "
+                            + blank(mr.getStatus(), "未知"));
+            auditLog.write(audit);
+            audit.stepFail("幂等校验", "重复点击，但当前状态仍是 " + blank(mr.getStatus(), "未知")
+                    + "，已恢复待审批卡片供重试");
+            setCard(resp, cardFactory.approvalCard(audit.getProject(), repoId, localId, mr,
+                    yunxiao.commitsFor(repoId, mr.getSourceBranch(), mr.getTargetBranch()),
+                    yunxiao.webUrlFor(audit.getProject(), localId, mr)));
+            resp.setToast(toast("info", "上次操作没有生效，已恢复卡片，可以重新点"));
+            return resp;
+        }
+
+        ResultKind kind = merging ? ResultKind.MERGED : ResultKind.CLOSED;
+        audit.title(mr.getTitle()).branches(mr.branchText())
+                .result("重复", "此前已经处理完成（" + kind.getLabel() + "），本次点击没有重复执行");
         auditLog.write(audit);
-        audit.stepFail("幂等校验", "同一动作此前已处理过，本次不重复执行；当前状态="
-                + blank(mr.getStatus(), "未知"));
+        audit.stepFail("幂等校验", "同一动作此前已处理过，本次不重复执行；当前状态=" + mr.getStatus());
 
-        resp.setToast(toast(done ? "success" : "info",
-                done ? "这个请求已经" + (merging ? "合并" : "关闭") + "完成了"
-                        : "这次点击和刚才重复，没有重复执行"));
-        setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), done, operator,
-                done ? "已经" + (merging ? "合并进 " + target : "拒绝（关闭）") + "，本次点击未重复执行"
-                        : "重复点击，未重复执行。当前状态：" + blank(mr.getStatus(), "未知"),
-                mr, mr.getDetailUrl()));
+        resp.setToast(toast("success", "这个请求已经" + kind.getLabel() + "了"));
+        setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), kind, operator,
+                merging ? "已经合并进 " + target : "已经拒绝（关闭）", mr, mr.getDetailUrl()));
         return resp;
     }
 
@@ -436,7 +447,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         audit.stepFail("操作未完成", result + "：" + message);
 
         resp.setToast(toast("error", message));
-        setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), false,
+        setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), ResultKind.FAILED,
                 audit.getOperator(), message, mr, mr.getDetailUrl()));
         return resp;
     }
