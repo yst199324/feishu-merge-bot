@@ -95,37 +95,9 @@ public class CardFactory {
         // 拿不到才回落到详情接口/本地拼接。提前算好，因为还要塞进按钮值给结果卡用
         String url = blank(webUrl, mr == null ? "" : blank(mr.getDetailUrl(), ""));
 
-        // 请求可能已经被别人在云效关掉或合掉了。飞书卡片是静态的，不会自动变，
-        // 但只要有人点一下按钮，服务端重查状态就会把它换成终态卡（见 finishedResult）。
-        // 这里处理的是"发卡时状态就已经是终态"的情况（轮询入口、重推等）。
-        String status = mr.getStatus();
-        boolean closed = "CLOSED".equals(status);
-        boolean merged = "MERGED".equals(status);
-        boolean finished = closed || merged;
-
-        boolean canMerge = !finished && mr.mergeable() && !mr.hasConflict() && mr.isAllRequirementsPass();
-        // 提示必须说真实原因。以前写死"存在冲突或卡点未通过"，
-        // 状态明明是已关闭还让人"点拒绝或让提交人处理"，是在把人往错的方向引。
-        String tips = finished
-                ? "合并请求已" + (closed ? "关闭" : "合并") + "，不能再操作"
-                : "存在冲突或卡点未通过，不能合并。点拒绝或让提交人处理";
-
-        Map<String, Object> mergeValue = value("merge", repoName, repoId, localId, commitLine, url);
-        Map<String, Object> closeValue = value("close", repoName, repoId, localId, commitLine, url);
-
-        Map<String, Object> mergeBtn = button("合并", canMerge ? "primary" : "default", mergeValue);
-        Map<String, Object> closeBtn = button("拒绝", finished ? "default" : "danger", closeValue);
-        if (!canMerge) {
-            mergeBtn.put("disabled", true);
-            mergeBtn.put("disabled_tips", plain(tips));
-        }
-        if (finished) {
-            // 请求都结束了，拒绝按钮也别亮着，否则看着像"还能再操作一次"
-            closeBtn.put("disabled", true);
-            closeBtn.put("disabled_tips", plain(tips));
-        }
-
-        elements.add(buttons(mergeBtn, closeBtn));
+        // 按钮区单独一个方法：能不能点的规则比较绕，混在骨架里容易看漏。
+        // 链接和最近提交会跟着按钮值带下去，给结果卡透传。
+        elements.add(actionButtons(repoName, repoId, localId, mr, commitLine, url));
 
         // 云效按钮 + 底部一行灰字链接。
         //
@@ -145,17 +117,53 @@ public class CardFactory {
             elements.add(markdown("<font color='grey'>云效链接（长按可复制）：" + esc(url) + "</font>"));
         }
 
-        // 终态用对应的颜色和标题：已关闭灰、已合并绿、待审批蓝。
-        // 群里颜色是"要不要处理"的信号，蓝色的待审批卡配两个灰按钮会自相矛盾。
+        // 头部跟着状态走：已关闭灰、已合并绿、待审批蓝。
+        // 群里颜色是"要不要处理"的信号，蓝色待审批配两个灰按钮会自相矛盾。
         String mrTitle = mr == null ? "" : blank(mr.getTitle(), "");
-        String label = closed ? "已关闭" : (merged ? "已合并" : "待审批");
-        String template = closed ? "grey" : (merged ? "green" : "blue");
+        String label = headLabel(mr);
         String headTitle = headOf(label, mrTitle, repoName);
         if (label.equals(headTitle)) {
             headTitle = "合并请求" + label;
         }
 
-        return toJson(card(template, headTitle, elements));
+        return toJson(card(headTemplate(mr), headTitle, elements));
+    }
+
+    /**
+     * 两个操作按钮。请求已终结时**两个都禁用并把拒绝按钮置灰**，
+     * 提示语说真实原因（不能再用写死的"存在冲突或卡点未通过"误导人）。
+     */
+    private Map<String, Object> actionButtons(String repoName, String repoId, String localId,
+                                              MrView mr, String commitLine, String url) {
+        boolean finished = mr.isFinished();
+        boolean canMerge = !finished && mr.mergeable() && !mr.hasConflict() && mr.isAllRequirementsPass();
+        String tips = finished
+                ? "合并请求已" + (mr.isClosed() ? "关闭" : "合并") + "，不能再操作"
+                : "存在冲突或卡点未通过，不能合并。点拒绝或让提交人处理";
+
+        Map<String, Object> mergeValue = value("merge", repoName, repoId, localId, commitLine, url);
+        Map<String, Object> closeValue = value("close", repoName, repoId, localId, commitLine, url);
+        Map<String, Object> mergeBtn = button("合并", canMerge ? "primary" : "default", mergeValue);
+        Map<String, Object> closeBtn = button("拒绝", finished ? "default" : "danger", closeValue);
+        if (!canMerge) {
+            mergeBtn.put("disabled", true);
+            mergeBtn.put("disabled_tips", plain(tips));
+        }
+        if (finished) {
+            closeBtn.put("disabled", true);
+            closeBtn.put("disabled_tips", plain(tips));
+        }
+        return buttons(mergeBtn, closeBtn);
+    }
+
+    /** 头部状态标签 */
+    private String headLabel(MrView mr) {
+        return mr.isClosed() ? "已关闭" : (mr.isMerged() ? "已合并" : "待审批");
+    }
+
+    /** 头部颜色，和结果卡的三色约定一致 */
+    private String headTemplate(MrView mr) {
+        return mr.isClosed() ? "grey" : (mr.isMerged() ? "green" : "blue");
     }
 
     /**

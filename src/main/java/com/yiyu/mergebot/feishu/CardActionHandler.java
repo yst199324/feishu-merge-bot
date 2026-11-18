@@ -285,7 +285,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                                                     String repoName, String repoId, String localId,
                                                     String operator) throws Exception {
         MrView latest = confirmMerged(repoId, localId);
-        if (!"MERGED".equals(latest.getStatus())) {
+        if (!latest.isMerged()) {
             return fail(resp, audit, latest, "失败", "合并接口返回成功，但状态仍是 " + latest.getStatus());
         }
         audit.title(latest.getTitle()).branches(latest.branchText())
@@ -307,7 +307,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
      */
     private MrView confirmMerged(String repoId, String localId) {
         MrView latest = yunxiao.getChangeRequest(repoId, localId);
-        if (!"MERGED".equals(latest.getStatus())) {
+        if (!latest.isMerged()) {
             latest = yunxiao.getChangeRequest(repoId, localId);
         }
         return latest;
@@ -415,7 +415,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                                                        String repoId, String localId,
                                                        boolean merging) throws Exception {
         MrView mr = safeGet(repoId, localId);
-        boolean done = merging ? "MERGED".equals(mr.getStatus()) : "CLOSED".equals(mr.getStatus());
+        boolean done = merging ? mr.isMerged() : mr.isClosed();
         String operator = audit.getOperator();
         String target = blank(mr.getTargetBranch(), "目标分支");
 
@@ -512,10 +512,10 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
      * 只认这两个状态——它们代表"这件事已经结束"，再点合并/拒绝都不会有结果。
      */
     private ResultKind finishedKind(MrView mr) {
-        if ("CLOSED".equals(mr.getStatus())) {
+        if (mr.isClosed()) {
             return ResultKind.CLOSED_ALREADY;
         }
-        if ("MERGED".equals(mr.getStatus())) {
+        if (mr.isMerged()) {
             return ResultKind.MERGED;
         }
         return null;

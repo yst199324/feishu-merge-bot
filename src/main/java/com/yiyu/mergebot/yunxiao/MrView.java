@@ -122,6 +122,21 @@ public class MrView {
         return "TO_BE_MERGED".equals(status);
     }
 
+    /** 已被关闭（不管是谁关的） */
+    public boolean isClosed() {
+        return "CLOSED".equals(status);
+    }
+
+    /** 已被合并（不管是谁合的） */
+    public boolean isMerged() {
+        return "MERGED".equals(status);
+    }
+
+    /** 已经终结：这两个状态下再点合并/拒绝都不会有结果 */
+    public boolean isFinished() {
+        return isClosed() || isMerged();
+    }
+
     public boolean hasConflict() {
         return "HAS_CONFLICT".equals(conflictCheckStatus);
     }
