@@ -297,9 +297,14 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                                                       YunxiaoException e) throws Exception {
         String msg = rootMessage(e);
         if (isAuthError(msg)) {
+            boolean expired = msg.contains("HTTP 401");
             alertTokenProblem(msg);
+            // 卡片上把 401 和 403 分开写：一个是"令牌没了"，一个是"权限不够"，
+            // 处理动作完全不同（前者要换令牌重启，后者改完权限就好），混成一句话会让人做错事
             return fail(resp, repoName, operator, safeGet(repoId, localId),
-                    "云效令牌失效或权限不足，这次操作没有执行。已往群里发了处理说明");
+                    expired
+                            ? "云效令牌已失效（401），这次操作没有执行。群里已发处理步骤"
+                            : "云效令牌权限不足（403），这次操作没有执行。群里已发处理步骤");
         }
         return fail(resp, repoName, operator, safeGet(repoId, localId), "云效返回失败：" + msg);
     }
