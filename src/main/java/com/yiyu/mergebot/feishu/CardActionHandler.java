@@ -47,6 +47,10 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
     private final MrLocks mrLocks;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    /** 令牌问题提醒的最小间隔：一小时内只往群里发一次，避免连点几次刷屏 */
+    private static final long AUTH_ALERT_INTERVAL_MS = 3600 * 1000L;
+    private volatile long lastAuthAlertAt;
+
     public CardActionHandler(FeishuProperties props,
                              CardFactory cardFactory,
                              YunxiaoClient yunxiao,
@@ -186,7 +190,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             // 不撤的话他会被告知"重复点击"，其实一次都没执行。
             idempotent.forget(idemKey);
             log.error("调云效合并失败 repo={} mr={}", repoId, localId, e);
-            return fail(resp, repoName, operator, safeGet(repoId, localId), "云效返回失败：" + rootMessage(e));
+            return failOnYunxiao(resp, repoName, operator, repoId, localId, e);
         } finally {
             lock.unlock();
         }
@@ -220,7 +224,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             // 同上：没成功就撤销登记，允许立刻重试
             idempotent.forget(idemKey);
             log.error("调云效关闭失败 repo={} mr={}", repoId, localId, e);
-            return fail(resp, repoName, operator, safeGet(repoId, localId), "云效返回失败：" + rootMessage(e));
+            return failOnYunxiao(resp, repoName, operator, repoId, localId, e);
         } finally {
             lock.unlock();
         }
@@ -276,6 +280,64 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         setCard(resp, cardFactory.resultCard(repoName, mr.getTitle(), false, operator,
                 message, mr, mr.getDetailUrl()));
         return resp;
+    }
+
+    /**
+     * 云效接口失败时的统一出口。
+     *
+     * 令牌失效（401）和权限不足（403）要单独对待：这两种情况**点多少次都不会成功**，
+     * 必须有人去换令牌或改权限。所以除了在卡片上写清楚，还往群里发一条带处理步骤的提醒，
+     * 免得审批人反复点、或者以为是自己操作错了。
+     *
+     * 为什么不另外做定时探测：令牌到期日很长，日常真正会遇到的是"被删掉 / 权限被改"，
+     * 而这类问题只有在真正调用云效时才会暴露。点击时顺手判断，零额外开销，也不会有误报。
+     */
+    private P2CardActionTriggerResponse failOnYunxiao(P2CardActionTriggerResponse resp, String repoName,
+                                                      String operator, String repoId, String localId,
+                                                      YunxiaoException e) throws Exception {
+        String msg = rootMessage(e);
+        if (isAuthError(msg)) {
+            alertTokenProblem(msg);
+            return fail(resp, repoName, operator, safeGet(repoId, localId),
+                    "云效令牌失效或权限不足，这次操作没有执行。已往群里发了处理说明");
+        }
+        return fail(resp, repoName, operator, safeGet(repoId, localId), "云效返回失败：" + msg);
+    }
+
+    /** 401 / 403 说明是令牌的问题，不是代码或网络的偶发故障 */
+    private boolean isAuthError(String msg) {
+        return msg != null && (msg.contains("HTTP 401") || msg.contains("HTTP 403"));
+    }
+
+    /** 令牌问题的群提醒。一小时内最多发一次，避免连续点几次刷屏 */
+    private void alertTokenProblem(String detail) {
+        long now = System.currentTimeMillis();
+        if (now - lastAuthAlertAt < AUTH_ALERT_INTERVAL_MS) {
+            log.info("令牌问题的提醒一小时内已经发过，本次跳过");
+            return;
+        }
+        String chatId = props.getChatId();
+        if (!StringUtils.hasText(chatId)) {
+            log.warn("没有配 feishu.chat-id，令牌提醒发不出去");
+            return;
+        }
+        lastAuthAlertAt = now;
+        boolean expired = detail.contains("HTTP 401");
+        String text = expired
+                ? "⚠️ 云效令牌失效了\n\n"
+                + "刚才有人点「合并」或「拒绝」时，云效返回「令牌无效或已过期」，操作没有执行。\n\n"
+                + "处理：\n"
+                + "1. 云效 → 头像 → 个人设置 → 个人访问令牌，新建一个\n"
+                + "2. 勾权限：代码管理 → 代码仓库 → 只读；合并请求 → 读 + 写\n"
+                + "3. 填到服务器 application.yml 的 yunxiao.token\n"
+                + "4. 进部署目录执行 ./restart.sh\n\n"
+                + "（同一类提醒一小时内只发一次）"
+                : "⚠️ 云效令牌权限不足\n\n"
+                + "刚才有人点「合并」或「拒绝」时被云效拒绝：令牌本身有效，但缺少接口权限，操作没有执行。\n\n"
+                + "处理：编辑这个令牌，勾上「代码仓库 → 只读」和「合并请求 → 读 + 写」。\n"
+                + "保存即可，令牌值不变，不用改配置也不用重启。";
+        messageService.sendText(chatId, text);
+        log.warn("已往群里发送令牌问题提醒（{}）", expired ? "401 失效" : "403 缺权限");
     }
 
     /** 查询失败时也要能出卡片，不能让异常把提示吞掉；但失败原因要留痕，否则只会看到一张空卡片 */

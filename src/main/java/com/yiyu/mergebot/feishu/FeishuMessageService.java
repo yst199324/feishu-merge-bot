@@ -1,6 +1,7 @@
 package com.yiyu.mergebot.feishu;
 
 import com.lark.oapi.Client;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.oapi.service.contact.v3.model.GetUserReq;
 import com.lark.oapi.service.contact.v3.model.GetUserResp;
 import com.lark.oapi.service.im.v1.model.CreateMessageReq;
@@ -17,7 +18,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -33,6 +36,7 @@ public class FeishuMessageService {
 
     private final Client client;
     private final FeishuProperties props;
+    private final ObjectMapper mapper = new ObjectMapper();
 
     /** 审批群成员 open_id 集合，整批缓存 */
     private volatile Set<String> memberIds = Collections.emptySet();
@@ -66,20 +70,28 @@ public class FeishuMessageService {
         }
     }
 
-    /** 发纯文本，排错时用 */
+    /**
+     * 发纯文本。
+     *
+     * 内容必须走 JSON 序列化：原先是手写 {"text":"..."}，只把双引号替换掉，
+     * 一旦文本里有换行、反斜杠或制表符，拼出来就是非法 JSON，飞书直接拒收。
+     * 令牌提醒那种多行消息必然带换行，所以这里改掉。
+     */
     public void sendText(String chatId, String text) {
         try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("text", text);
             CreateMessageReq req = CreateMessageReq.newBuilder()
                     .receiveIdType("chat_id")
                     .createMessageReqBody(CreateMessageReqBody.newBuilder()
                             .receiveId(chatId)
                             .msgType("text")
-                            .content("{\"text\":\"" + text.replace("\"", "\\\"") + "\"}")
+                            .content(mapper.writeValueAsString(payload))
                             .build())
                     .build();
             client.im().message().create(req);
         } catch (Exception e) {
-            log.error("发文本失败", e);
+            log.error("发文本失败：{}", e.getMessage());
         }
     }
 
