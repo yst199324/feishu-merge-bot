@@ -131,6 +131,44 @@ class CardFactoryTest {
     }
 
     @Test
+    @DisplayName("请求已被关闭：卡片灰、标题「已关闭」、两个按钮都禁用且说明真实原因")
+    void closedRequestCard() throws Exception {
+        String json = factory.approvalCard("proj", "5425167", "36", mr("CLOSED", "改动 A"),
+                Collections.emptyList(), "https://codeup.aliyun.com/x");
+
+        assertTrue(json.contains("已关闭 · 改动 A"));
+        assertTrue(json.contains("\"template\":\"grey\""), "已关闭用灰色，不是蓝色待审批");
+        assertTrue(json.contains("合并请求已关闭，不能再操作"));
+        assertFalse(json.contains("点拒绝或让提交人处理"), "状态已终结时不能再往拒绝方向引");
+        assertFalse(json.contains("\"type\":\"danger\""), "拒绝按钮不能还亮红");
+        assertTrue(json.split("\"disabled\":true", -1).length - 1 >= 2, "两个按钮都要禁用");
+    }
+
+    @Test
+    @DisplayName("别人手动合并了：卡片绿、标题「已合并」、两个按钮都禁用")
+    void alreadyMergedRequestCard() throws Exception {
+        String json = factory.approvalCard("proj", "5425167", "36", mr("MERGED", "改动 A"),
+                Collections.emptyList(), "https://codeup.aliyun.com/x");
+
+        assertTrue(json.contains("已合并 · 改动 A"));
+        assertTrue(json.contains("\"template\":\"green\""));
+        assertTrue(json.contains("合并请求已合并，不能再操作"));
+        assertTrue(json.split("\"disabled\":true", -1).length - 1 >= 2, "两个按钮都要禁用");
+    }
+
+    @Test
+    @DisplayName("点按钮发现请求已关闭：给灰色终态卡，不是红色失败卡")
+    void closedAlreadyResultCard() throws Exception {
+        String json = factory.resultCard("proj", "改动 A", ResultKind.CLOSED_ALREADY,
+                "张三（123456）", "该合并请求已被关闭", mr("CLOSED", "改动 A"), null, "");
+
+        assertTrue(json.contains("已关闭 · 改动 A"));
+        assertTrue(json.contains("\"template\":\"grey\""));
+        assertTrue(json.contains("该合并请求已被关闭"));
+        assertFalse(json.contains("操作失败"), "请求结束不是系统出错");
+    }
+
+    @Test
     @DisplayName("头部截断按显示宽度算：英文项目名完整保留，超长中文标题才截")
     void headerTruncatesByWidth() throws Exception {
         // 25 个半角字符（宽度 25），按宽度 38 应该完整放下

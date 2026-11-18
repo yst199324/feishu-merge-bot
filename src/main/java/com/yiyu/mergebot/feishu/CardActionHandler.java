@@ -236,6 +236,12 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             audit.step(step, "状态=" + mr.getStatus() + " 分支=" + mr.branchText()
                     + " 冲突=" + mr.conflictText());
 
+            // 别人已经在云效把请求关掉/合掉了：这是正常终态，不是操作失败
+            ResultKind finished = finishedKind(mr);
+            if (finished != null) {
+                return finishedResult(resp, audit, mr, finished);
+            }
+
             String reason = notMergeableReason(mr);
             if (reason != null) {
                 return fail(resp, audit, mr, "未执行", reason);
@@ -350,8 +356,10 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             MrView mr = yunxiao.getChangeRequest(repoId, localId);
             audit.title(mr.getTitle()).branches(mr.branchText());
             audit.step(step, "状态=" + mr.getStatus() + " 分支=" + mr.branchText());
-            if ("CLOSED".equals(mr.getStatus()) || "MERGED".equals(mr.getStatus())) {
-                return fail(resp, audit, mr, "未执行", "已经是 " + mr.getStatus() + " 状态，不能再拒绝");
+            // 同 doMerge：已经是终态就给终态卡，不用英文状态码去吓人
+            ResultKind finished = finishedKind(mr);
+            if (finished != null) {
+                return finishedResult(resp, audit, mr, finished);
             }
             step = "调用云效关闭接口";
             audit.step(step, "mr=" + localId);
@@ -412,6 +420,12 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         String target = blank(mr.getTargetBranch(), "目标分支");
 
         if (!done) {
+            // 上次可能压根没执行，但也可能这期间别人在云效把请求终结了。
+            // 后者要给终态卡，不能恢复成一张"还能点"的待审批卡
+            ResultKind finished = finishedKind(mr);
+            if (finished != null) {
+                return finishedResult(resp, audit, mr, finished);
+            }
             // 上次没成：把卡片恢复成待审批态（带按钮），让用户能立刻再点。
             // 不能给结果卡——那样按钮就没了，用户只能干等 30 分钟让幂等过期，或者去云效手工合。
             audit.title(mr.getTitle()).branches(mr.branchText())
@@ -490,6 +504,43 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
     /** 401 / 403 说明是令牌的问题，不是代码或网络的偶发故障 */
     private boolean isAuthError(String msg) {
         return msg != null && (msg.contains("HTTP 401") || msg.contains("HTTP 403"));
+    }
+
+    /**
+     * 别人在云效把请求终结了？返回对应的终态，否则返回 null。
+     *
+     * 只认这两个状态——它们代表"这件事已经结束"，再点合并/拒绝都不会有结果。
+     */
+    private ResultKind finishedKind(MrView mr) {
+        if ("CLOSED".equals(mr.getStatus())) {
+            return ResultKind.CLOSED_ALREADY;
+        }
+        if ("MERGED".equals(mr.getStatus())) {
+            return ResultKind.MERGED;
+        }
+        return null;
+    }
+
+    /**
+     * 请求已经终结时给终态卡，**不是失败卡**。
+     *
+     * 以前走 fail() 会渲染红色「操作失败」，让人以为系统出错、反复去点；
+     * 实际上请求早就结束了，属于正常终态。审计里也记「已结束」而不是「失败」。
+     */
+    private P2CardActionTriggerResponse finishedResult(P2CardActionTriggerResponse resp,
+                                                       AuditEntry audit, MrView mr,
+                                                       ResultKind kind) throws Exception {
+        String desc = kind == ResultKind.CLOSED_ALREADY
+                ? "该合并请求已被关闭" : "该合并请求已被合并";
+        audit.title(mr.getTitle()).branches(mr.branchText()).result("已结束", desc);
+        auditLog.write(audit);
+        audit.stepFail("状态校验", "请求已终结（" + mr.getStatus() + "），本次没有执行");
+        resp.setToast(toast("info", desc + "，不能再操作"));
+        setCard(resp, cardFactory.resultCard(audit.getProject(), mr.getTitle(), kind,
+                audit.getOperator(), desc, mr,
+                resultUrl(audit, audit.getProject(), audit.getMrId(), mr),
+                audit.getLatestCommit()));
+        return resp;
     }
 
     /**
