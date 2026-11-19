@@ -1,3 +1,25 @@
+# ---------------------------------------------------------------
+# 这份文件进仓库，所以里面只放占位值。
+#
+# 真实值统一写在项目根目录的 .env 里（该文件不进仓库）。
+# 下面凡是 ${FEISHU_APP_ID:...} 这种写法：.env 里有这一项就用它的值，
+# 没有就回落到冒号后面的默认值。所以没有 .env 也能启动，
+# 只是必填项会用占位值，启动校验会提示"未填写"。
+#
+# 用法：把 .env.example 复制成 .env，填上真实值即可。
+#
+# 部署到服务器走另一套：jar 同级目录的 application.yml，
+# start.sh 用 --spring.config.additional-location 加载，优先级最高。
+# 也就是说服务器上不需要 .env，照旧改那份 yml 就行。
+# ---------------------------------------------------------------
+spring:
+  config:
+    # 把项目根目录的 .env 当普通配置文件读（内容就是 KEY=VALUE 一行一个）。
+    # 方括号里的 .properties 是告诉 Spring 按 properties 格式解析它，
+    # 不加的话会因为没有 .env 扩展名的解析器而报错。
+    # optional: 表示文件不存在时不报错，直接用下面的默认值
+    import: optional:file:./.env[.properties]
+
 server:
   port: 8081
   # 配好 Nginx 反代、只暴露 /webhook/* 之后，把下面这行的注释去掉，
@@ -58,12 +80,12 @@ mergebot:
 
 feishu:
   # 开发者后台 -> 凭证与基础信息
-  app-id: cli_aa70056631b81bb4
-  app-secret: "在这里粘贴 App Secret"
+  app-id: ${FEISHU_APP_ID:cli_你的应用ID}
+  app-secret: "${FEISHU_APP_SECRET:在这里粘贴 App Secret}"
 
   # 接收审批卡片的群 chat_id（oc_ 开头）
-  # 校验方法：把机器人拉进群后调 GET /test/chats，在返回列表里找这个值
-  chat-id: "oc_c8dbba44830492d93d856ed7a4705ddc"
+  # 拿法：群设置页拉到最底部，抄「会话 ID」；或把机器人拉进群后调 GET /test/chats
+  chat-id: "${FEISHU_CHAT_ID:oc_你的群会话ID}"
 
   # 允许点按钮的人，每行一个，ou_ 开头。
   #
@@ -109,11 +131,11 @@ yunxiao:
   # 个人访问令牌（pt- 开头）。
   # 强烈建议用单独的"合并机器人"账号生成，别用你自己的，
   # 否则云效审计日志里所有合并记录都算你本人操作
-  token: "pt-xxxxxxxxxxxxxxxx"
+  token: "${YUNXIAO_TOKEN:pt-xxxxxxxxxxxxxxxx}"
 
-  # 组织 ID。你的是 607f9fbe429bb594fdddc638，已填好。
-  # 留空会走 Region 版路径，中心版组织会查不到数据
-  org-id: "607f9fbe429bb594fdddc638"
+  # 组织 ID。留空会走 Region 版路径，中心版组织会查不到数据。
+  # 从云效「组织设置 -> 基本信息」里抄，或看网页地址里 orgId 那一段
+  org-id: "${YUNXIAO_ORG_ID:你的组织ID}"
 
   # 合并方式：ff-only / no-fast-forward / squash / rebase
   merge-type: no-fast-forward
@@ -125,7 +147,7 @@ yunxiao:
   # **留空服务不启动**（这是故意的：空值等于门没锁，任何人都能 POST 进来发卡片）。
   # 填任意随机字符串，比如 mrb-store-web-2026-abc123，
   # 然后去云效代码库 -> 设置 -> Webhooks 里填同一个值。
-  webhook-token: "在这里填一个随机字符串"
+  webhook-token: "${YUNXIAO_WEBHOOK_TOKEN:在这里填一个随机字符串}"
 
   # 只有走「云效流水线 -> 调 /webhook/flow」这条路才需要配：
   # 流水线的内置变量里没有仓库 ID，只给仓库名，这里把名字映射成 ID。

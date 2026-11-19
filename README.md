@@ -347,18 +347,28 @@ cd feishu-merge-bot
 
 ### 第 2 步：填配置
 
-配置在 `src/main/resources/application.yml`，本地跑就改这一份。**必填的只有这 6 项**：
+真实值写在项目根目录的 `.env` 里。**不要改 `src/main/resources/application.yml`** —— 那份是进仓库的模板，里面只有占位值。
 
-| 配置项 | 填什么 | 从哪拿 |
+```bash
+cp .env.example .env
+```
+
+然后编辑 `.env`，**必填的只有这 6 项**：
+
+| 变量名 | 填什么 | 从哪拿 |
 |---|---|---|
-| `feishu.app-id` | `cli_` 开头 | [4.2](#42-拿到-app-id-和-app-secret) |
-| `feishu.app-secret` | 一串随机字符 | [4.2](#42-拿到-app-id-和-app-secret) |
-| `feishu.chat-id` | 审批群 ID，`oc_` 开头 | [4.7](#47-把机器人拉进审批群) 群设置页拉到最底部，抄「会话 ID」 |
-| `yunxiao.token` | `pt_` 开头 | [5.1](#51-申请个人访问令牌) |
-| `yunxiao.org-id` | 组织 ID | [5.2](#52-拿组织-id) |
-| `yunxiao.webhook-token` | 自己定一个随机字符串 | 比如 `mrb-store-2026-abc123`，之后云效那边填同一个 |
+| `FEISHU_APP_ID` | `cli_` 开头 | [4.2](#42-拿到-app-id-和-app-secret) |
+| `FEISHU_APP_SECRET` | 一串随机字符 | [4.2](#42-拿到-app-id-和-app-secret) |
+| `FEISHU_CHAT_ID` | 审批群 ID，`oc_` 开头 | [4.7](#47-把机器人拉进审批群) 群设置页拉到最底部，抄「会话 ID」 |
+| `YUNXIAO_TOKEN` | `pt_` 开头 | [5.1](#51-申请个人访问令牌) |
+| `YUNXIAO_ORG_ID` | 组织 ID | [5.2](#52-拿组织-id) |
+| `YUNXIAO_WEBHOOK_TOKEN` | 自己定一个随机字符串 | 比如 `mrb-store-2026-abc123`，之后云效那边填同一个 |
 
-其余保持默认。几个值得知道的默认值：
+没写进 `.env` 的项会回落到 `application.yml` 里的默认值。必填项还留着占位值时，服务启动会直接报 `配置项 [xxx] 未填写` 并退出 —— 不是 bug，是故意的，防止“看起来在跑、其实调不通”。
+
+`.env` 已被 `.gitignore` 排除，不会推到 GitHub。**部署到服务器不用 `.env`**，改 jar 同级那份 `application.yml`（见第九章）。
+
+几个值得知道的默认值（这些不敏感，留在 yml 里就行）：
 
 - `feishu.allow-group-members: true` —— **审批群里的人都能点按钮**，加人减人自动生效，不用维护名单（推荐就用这个）
 - `mergebot.test-endpoints: true` —— 打开调试接口 `/test/*` 和自检接口。**验收完就改成 `false`**，否则谁都调得动它

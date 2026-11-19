@@ -1,0 +1,61 @@
+package com.yiyu.mergebot.support;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * 占位值判定测试。
+ *
+ * 这条规则决定两件事：服务能不能启动（StartupValidator）、自检报不报"配置没填"
+ * （SelfCheckService）。判错的方向只有一种——把占位值当成已填，
+ * 表现是服务起来了但所有接口都调不通，比直接起不来更难排查。
+ */
+class TextsTest {
+
+    @Test
+    @DisplayName("空值一律算占位")
+    void blankIsPlaceholder() {
+        assertTrue(Texts.isPlaceholder(null));
+        assertTrue(Texts.isPlaceholder(""));
+        assertTrue(Texts.isPlaceholder("   "));
+    }
+
+    @Test
+    @DisplayName("模板里的中文占位值算占位")
+    void chinesePlaceholder() {
+        assertTrue(Texts.isPlaceholder("cli_你的应用ID"));
+        assertTrue(Texts.isPlaceholder("oc_你的群会话ID"));
+        assertTrue(Texts.isPlaceholder("你的组织ID"));
+        assertTrue(Texts.isPlaceholder("在这里粘贴 App Secret"));
+        assertTrue(Texts.isPlaceholder("在这里填一个随机字符串"));
+    }
+
+    @Test
+    @DisplayName("xxxx 形式的占位值算占位")
+    void xxxxPlaceholder() {
+        assertTrue(Texts.isPlaceholder("pt-xxxxxxxxxxxxxxxx"));
+        assertTrue(Texts.isPlaceholder("PT-XXXX"));
+    }
+
+    @Test
+    @DisplayName("真实凭据的形态都不算占位")
+    void realValuesAreNotPlaceholder() {
+        assertFalse(Texts.isPlaceholder("cli_aa70056631b81bb4"));
+        assertFalse(Texts.isPlaceholder("oc_c8dbba44830492d93d856ed7a4705ddc"));
+        assertFalse(Texts.isPlaceholder("607f9fbe429bb594fdddc638"));
+        assertFalse(Texts.isPlaceholder("mrb-2026-store-web-new"));
+        assertFalse(Texts.isPlaceholder("pt-abc123def456"));
+    }
+
+    @Test
+    @DisplayName("tail 取末位，空值给占位符")
+    void tailStillWorks() {
+        assertTrue("b81bb4".equals(Texts.tail("cli_aa70056631b81bb4", 6)));
+        assertTrue(Texts.UNKNOWN_TAIL.equals(Texts.tail(null, 6)));
+        assertTrue(Texts.UNKNOWN_TAIL.equals(Texts.tail("  ", 6)));
+        assertTrue("ab".equals(Texts.tail("ab", 6)));
+    }
+}

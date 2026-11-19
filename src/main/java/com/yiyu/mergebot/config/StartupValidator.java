@@ -1,5 +1,6 @@
 package com.yiyu.mergebot.config;
 
+import com.yiyu.mergebot.support.Texts;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.stereotype.Component;
@@ -38,7 +39,7 @@ public class StartupValidator implements InitializingBean {
         require("feishu.chat-id", feishu.getChatId());
 
         // 触发方式至少要有一条，否则服务起来了也永远不会发卡片
-        boolean hasWebhookToken = !isPlaceholder(yunxiao.getWebhookToken());
+        boolean hasWebhookToken = !Texts.isPlaceholder(yunxiao.getWebhookToken());
         if (!poll.isEnabled() && !hasWebhookToken) {
             throw new IllegalStateException("没有任何触发方式，服务不启动。二选一：\n"
                     + "  1) 没有公网：把 mergebot.poll.enabled 改成 true，并填 mergebot.poll.repo-ids；\n"
@@ -74,20 +75,12 @@ public class StartupValidator implements InitializingBean {
     }
 
     private void require(String key, String value) {
-        if (isPlaceholder(value)) {
+        if (Texts.isPlaceholder(value)) {
             throw new IllegalStateException("配置项 [" + key + "] 未填写，服务不启动。"
-                    + "本地调试改 src/main/resources/application.yml；"
+                    + "本地开发改项目根目录的 .env（该文件不进仓库，模板见 .env.example）；"
                     + "服务器上改 jar 同级的 application.yml（start.sh 用的是那份）。"
                     + "其中 yunxiao.webhook-token 填任意非空字符串即可，"
                     + "但必须和云效 Webhook 配置里的 Secret Token 完全一致");
         }
-    }
-
-    /** 空值，或还是 yml 里的占位样例 */
-    private boolean isPlaceholder(String value) {
-        if (!StringUtils.hasText(value)) {
-            return true;
-        }
-        return value.startsWith("在这里") || value.contains("xxxx");
     }
 }

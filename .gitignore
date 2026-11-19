@@ -12,3 +12,7 @@ deploy/*.jar
 
 # 真实部署配置含密钥，不入库。模板见 application.yml.example
 deploy/application.yml
+
+# 本地开发的真实配置，不入库。模板见 .env.example
+# 只忽略根目录那个 .env，不影响 .env.example
+/.env

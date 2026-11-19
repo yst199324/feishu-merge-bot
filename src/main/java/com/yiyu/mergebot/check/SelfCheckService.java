@@ -9,6 +9,7 @@ import com.yiyu.mergebot.feishu.CardFactory;
 import com.yiyu.mergebot.feishu.FeishuMessageService;
 import com.yiyu.mergebot.feishu.FeishuMessageService.ChatProbe;
 import com.yiyu.mergebot.feishu.FeishuWsRunner;
+import com.yiyu.mergebot.support.Texts;
 import com.yiyu.mergebot.support.WebhookDebugStore;
 import com.yiyu.mergebot.yunxiao.RepoItem;
 import com.yiyu.mergebot.yunxiao.YunxiaoClient;
@@ -784,22 +785,15 @@ public class SelfCheckService {
     /**
      * 空值，或还是模板里的占位值。
      *
-     * 判断依据是"有没有中文字符"：真实凭据只可能是英文字母、数字、下划线和横线
-     * （cli_xxx / pt_xxx / oc_xxx / 十六进制组织 ID），出现中文就一定是从模板抄下来没改的
-     * 「你的应用ID」「自己定一个随机字符串」。
+     * 判断规则本身放在 {@link Texts#isPlaceholder(String)}，和启动校验共用一份：
+     * 真实凭据只可能是英文字母、数字、下划线和横线（cli_xxx / pt_xxx / oc_xxx / 十六进制
+     * 组织 ID），出现中文就一定是从模板抄下来没改的「你的应用ID」「自己定一个随机字符串」。
      *
-     * 之前只认 "在这里" 和 "xxxx" 两种，结果把模板里那六个占位值全判成"已填"，
-     * 于是第 01 项报"配置都填好了"、第 06 项报"令牌过期" —— 自相矛盾，
-     * 还把本来只是"没填"的人引去云效查令牌到期时间。
+     * 这个规则以前在自检和启动校验里各写一套，自检修了、启动校验没修，
+     * 结果照抄模板能启动、接口全调不通。合并到工具类就是为了不再有第二次。
      */
     private boolean filled(String v) {
-        if (!StringUtils.hasText(v)) {
-            return false;
-        }
-        if (v.contains("xxxx") || v.contains("XXXX")) {
-            return false;
-        }
-        return v.chars().allMatch(c -> c < 128);
+        return !Texts.isPlaceholder(v);
     }
 
     private String shortReason(String msg) {
