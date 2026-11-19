@@ -175,6 +175,14 @@ One of the following scopes is required:
 
 打开那个群 → 右上角「设置」（齿轮）→「群机器人」→「添加机器人」→ 搜索你的应用名 → 添加。
 
+加完**先别关这个设置页**，往下拉到最底部，有一行「会话 ID」，`oc_` 开头的一长串字符，点一下就能复制。这个就是配置里要填的 `feishu.chat-id`。
+
+抄的时候注意三点：
+
+- 要的是「会话 ID」（`oc_` 开头），不是「群号」（纯数字），两个长得像但填错了发不出卡片；
+- 有的版本把它收在「关于本群」里，展开就能看到；
+- 实在找不到，等第 4 步服务起来后调 `/test/chats`，返回列表里对着群名抄。但那条路要先让机器人进群，所以还是先按上面的步骤加机器人。
+
 不加进群，发卡片会报：
 
 ```
@@ -316,7 +324,7 @@ firewall-cmd --list-ports
 # 3. 云主机控制台的「安全组」也要加入站规则（TCP 18123）
 ```
 
-要做来源白名单的话，云效的两个出口 IP 必须加上：`47.98.116.130`、`47.111.186.29`。
+要做来源白名单的话，得把云效的两个出口 IP 一起加进去（具体值在云效「代码库设置 → Webhooks」页面的说明里列着），否则云效的请求会被挡在外面。
 
 **验证一定要用外部网络**：手机切 4G，浏览器打开
 
@@ -345,7 +353,7 @@ cd feishu-merge-bot
 |---|---|---|
 | `feishu.app-id` | `cli_` 开头 | [4.2](#42-拿到-app-id-和-app-secret) |
 | `feishu.app-secret` | 一串随机字符 | [4.2](#42-拿到-app-id-和-app-secret) |
-| `feishu.chat-id` | 审批群 ID，`oc_` 开头 | 服务起来后调 `/test/chats` 查 |
+| `feishu.chat-id` | 审批群 ID，`oc_` 开头 | [4.7](#47-把机器人拉进审批群) 群设置页拉到最底部，抄「会话 ID」 |
 | `yunxiao.token` | `pt_` 开头 | [5.1](#51-申请个人访问令牌) |
 | `yunxiao.org-id` | 组织 ID | [5.2](#52-拿组织-id) |
 | `yunxiao.webhook-token` | 自己定一个随机字符串 | 比如 `mrb-store-2026-abc123`，之后云效那边填同一个 |
@@ -691,7 +699,7 @@ mergebot:
 |---|---|---|
 | `feishu.app-id` | 必填 | 应用 ID |
 | `feishu.app-secret` | 必填 | 应用密钥 |
-| `feishu.chat-id` | 必填 | 审批群 ID，`oc_` 开头 |
+| `feishu.chat-id` | 必填 | 审批群 ID，`oc_` 开头。从群设置页拉到最底部抄「会话 ID」 |
 | `feishu.allow-group-members` | true | 是否允许审批群成员点按钮 |
 | `feishu.allowed-open-ids` | 空 | 固定白名单，和上一条是"或"关系。一般不用填 |
 | `feishu.group-member-cache-seconds` | 300 | 群成员判断结果缓存多久。刚被移出群的人最迟这么久之后点不动，刚进群的人立刻能点 |
@@ -765,7 +773,7 @@ tail -f logs/merge-bot-info.log
 | 云效点了测试按钮，日志什么都没有 | 端口没放行，或者云效那边 URL 填错。手机切 4G 开 `http://公网IP:端口/webhook/yunxiao`，405 才算通 |
 | 日志有"忽略非合并请求事件" | 正常，测试按钮发的是推送事件，不发卡 |
 | 日志有"没带 X-Codeup-Delivery，本次丢弃" | 请求头被中间代理过滤了。查 Nginx 的 `proxy_set_header` 有没有白名单把未知头吃掉 |
-| 群里收不到卡片 | ①`feishu.chat-id` 对不对（`/test/chats` 查）②机器人进群没 ③权限发版没 |
+| 群里收不到卡片 | ①`feishu.chat-id` 对不对（群设置页拉到最底部抄「会话 ID」，或 `/test/chats` 查）②机器人进群没 ③权限发版没 |
 | 卡片能收到，点按钮没反应 | 长连接没连上。自检第 14 项会直接说；日志搜「飞书长连接已建立」 |
 | 点按钮提示"没有合并权限" | `im:chat.members:read` 没开，或者开了没发版 |
 | 卡片上操作人显示"未知用户（末 6 位）" | 缺通讯录权限，开 `contact:contact.base:readonly` |
