@@ -10,7 +10,7 @@ cp.txt
 # 部署产物：jar 是构建生成的，不入库（本地 mvn package 或看 deploy 说明）
 deploy/*.jar
 
-# 真实部署配置含密钥，不入库。模板见 application.yml.example
+# 服务器上的拷贝件，直接从 src/main/resources/application.yml 复制，不入库
 deploy/application.yml
 
 # 服务器上的真实值（凭据 + 端口），不入库。模板见 deploy/.env.example

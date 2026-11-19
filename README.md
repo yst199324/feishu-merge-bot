@@ -630,7 +630,9 @@ curl 127.0.0.1:8081/test/last-webhook
 1. 本地改完 `application.yml`（加配置、改注释），**整份覆盖到服务器就行**，不会冲掉服务器上的凭据
 2. 服务器和本地只有 `.env` 不一样，那份永远不用动
 
-`deploy/application.yml`、`deploy/.env`、`deploy/*.jar` 都在 `.gitignore` 里。仓库里只有模板：`deploy/application.yml.example`、`deploy/.env.example`。
+`deploy/application.yml`、`deploy/.env`、`deploy/*.jar` 都在 `.gitignore` 里，都是本机或服务器上的拷贝件。仓库里给模板的只有一份：`deploy/.env.example`。
+
+`application.yml` **没有模板文件**，直接用 `src/main/resources/application.yml` 复制过去就行——它本来就只有结构、不含真实值。也**不要在服务器那份里写真实凭据**：外置 yml 的优先级高于 `.env`，一旦写成本地字面值，下次覆盖时又会把服务器上的值冲掉，回到"每次手改"的老问题。
 
 ### 9.2 三步配好
 
