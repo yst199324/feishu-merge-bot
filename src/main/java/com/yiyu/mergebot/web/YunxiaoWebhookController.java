@@ -172,6 +172,16 @@ public class YunxiaoWebhookController {
      * @return 处理结果说明，写进 /test/last-webhook，方便对着看是哪一步没走通
      */
     private String dispatch(String raw, String deliveryId) throws Exception {
+        // 前置断言：空编号会把去重键拼成 "yx:dlv:null"，所有请求共用这一个键，
+        // 30 分钟内除第一条外全部被判成重复、静默丢弃——这是本项目最怕的故障形态。
+        // 入口 onEvent 已经拦过并把这种情况变成 400，这里再断言一次，
+        // 是为了让"将来新增调用方忘了校验"在开发和测试阶段就炸出来，
+        // 而不是上线后表现成"卡片偶尔不发、日志一切正常"。
+        // 注意 String 拼 null 不会抛异常，只会默默拼出 "null"，靠编译器和运行时不报错。
+        if (!StringUtils.hasText(deliveryId)) {
+            throw new IllegalArgumentException("投递编号为空，拒绝处理：会拼出共用键 yx:dlv:null");
+        }
+
         JsonNode root = mapper.readTree(raw);
         String kind = text(root, "object_kind", "objectKind");
         if (!"merge_request".equals(kind)) {

@@ -20,6 +20,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -154,6 +155,17 @@ class YunxiaoWebhookControllerTest {
         ResponseEntity<String> resp = controller.onEvent(payload("close"), headers(null));
 
         assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+        verify(messageService, times(0)).sendCard(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("dispatch 收到空编号要立刻炸，不能拼出共用键 yx:dlv:null")
+    void dispatchRejectsBlankDelivery() {
+        // 入口已经拦过，正常走不到这里。这条守的是"以后有人新增调用方忘了校验"：
+        // String 拼 null 不会报错，只会默默得到 "yx:dlv:null"，
+        // 届时所有请求共用一个键，除第一条外全被静默丢弃。
+        assertThrows(IllegalArgumentException.class,
+                () -> ReflectionTestUtils.invokeMethod(controller, "dispatch", payload("open"), null));
         verify(messageService, times(0)).sendCard(anyString(), anyString());
     }
 
