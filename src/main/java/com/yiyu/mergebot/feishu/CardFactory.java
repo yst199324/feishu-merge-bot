@@ -241,7 +241,28 @@ public class CardFactory {
         return toJson(card("orange", headOf("二次确认", mr.getTitle(), ""), elements));
     }
 
-    /** 结果卡片：操作完成后回写，把按钮换成结论，避免重复点击 */
+    /**
+     * 通用通知卡：一个标题、几行正文、一行灰色脚注。没有按钮、不承载任何业务数据。
+     *
+     * 给自检接口用（"能看到这张卡，就说明机器人在群里且能发消息"）。
+     * 放在这里而不是让调用方自己拼字符串，是因为卡片结构必须只有一处源头：
+     * 之前自检卡手拼的是 1.0 结构（header + elements），业务卡是 2.0（body.elements），
+     * 两套并存时飞书一旦收紧 1.0，就会出现"业务卡正常、自检卡发不出去"这种怪事。
+     *
+     * @param lines    正文，每行一条，内容按 markdown 渲染（可含 **加粗**）
+     * @param footNote 脚注，灰色小字；为空则不显示
+     */
+    public String noticeCard(String title, List<String> lines, String footNote) {
+        List<Object> elements = new ArrayList<>();
+        for (String line : lines) {
+            elements.add(markdown(line));
+        }
+        if (!blank(footNote, "").isEmpty()) {
+            elements.add(markdown("<font color='grey'>" + esc(footNote) + "</font>"));
+        }
+        return toJson(card("blue", title, elements));
+    }
+
     /**
      * 结果卡：把一次操作的结果回写到卡片上。
      *

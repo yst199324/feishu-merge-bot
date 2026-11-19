@@ -9,6 +9,7 @@ import com.yiyu.mergebot.check.SelfCheckService.Result;
 import com.yiyu.mergebot.config.FeishuProperties;
 import com.yiyu.mergebot.config.PollProperties;
 import com.yiyu.mergebot.config.YunxiaoProperties;
+import com.yiyu.mergebot.feishu.CardFactory;
 import com.yiyu.mergebot.feishu.FeishuMessageService;
 import com.yiyu.mergebot.feishu.FeishuMessageService.ChatProbe;
 import com.yiyu.mergebot.feishu.FeishuWsRunner;
@@ -18,12 +19,14 @@ import com.yiyu.mergebot.yunxiao.YunxiaoException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.Collections;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -84,7 +87,7 @@ class SelfCheckServiceTest {
         when(wsRunner.isConnected()).thenReturn(true);
 
         service = new SelfCheckService(yunxiao, yunxiaoProps, feishuProps, pollProps,
-                messageService, wsRunner, debugStore, "18123", "", true);
+                messageService, wsRunner, debugStore, new CardFactory(), "18123", "");
     }
 
     @Test
@@ -233,6 +236,58 @@ class SelfCheckServiceTest {
         assertTrue(text.contains("【一、配置文件】"), text);
         assertTrue(text.contains("【四、运行环境】"), text);
         assertTrue(text.contains("共 "), text);
+    }
+
+    @Test
+    @DisplayName("照抄配置模板不改，必须报「缺哪一项」，不能显示配置已就绪")
+    void templatePlaceholders() {
+        // 这六个值就是从 deploy/application.yml.example 原样复制过来的。
+        // 之前只认 "在这里" 和 "xxxx"，这六个全被判成"已填"，
+        // 于是第一项说配置齐全、第六项说令牌过期，自相矛盾。
+        yunxiaoProps.setToken("pt_你的令牌");
+        yunxiaoProps.setOrgId("你的组织ID");
+        yunxiaoProps.setWebhookToken("自己定一个随机字符串");
+        feishuProps.setAppId("cli_你的应用ID");
+        feishuProps.setAppSecret("你的 App Secret");
+        feishuProps.setChatId("oc_审批群ID");
+
+        Report report = service.run(false);
+
+        Result required = find(report, "必填配置项");
+        assertEquals(Level.FAIL, required.getLevel(), required.getDetail());
+        assertTrue(required.getDetail().contains("云效令牌"), required.getDetail());
+        assertTrue(required.getDetail().contains("审批群 chat-id"), required.getDetail());
+        // 组织 ID 同样不能显示通过
+        assertNotEquals(Level.PASS, find(report, "云效组织 ID").getLevel());
+        // 触发方式也不该说"Webhook 就绪"
+        assertEquals(Level.FAIL, find(report, "触发方式").getLevel());
+    }
+
+    @Test
+    @DisplayName("没有必须修的项时不能说「最先要修」，否则等于每天发一份假待办")
+    void noFakeTodo() {
+        Report report = service.run(false);
+        String text = service.render(report);
+
+        // 默认场景下写权限、最近一次推送都是「待确认」，但没有任何 FAIL
+        assertEquals(0, report.getCounts().get("fail"));
+        assertFalse(text.contains("最先要修"), text);
+        assertTrue(text.contains("没有必须修的项"), text);
+    }
+
+    @Test
+    @DisplayName("自检卡走 CardFactory，和业务卡是同一套 2.0 结构")
+    void selfCheckCardUsesCardFactory() {
+        ArgumentCaptor<String> card = ArgumentCaptor.forClass(String.class);
+
+        service.run(true);
+
+        verify(messageService).sendCard(eq(CHAT_ID), card.capture());
+        String json = card.getValue();
+        // 1.0 结构是顶层 elements，2.0 是 body.elements。这里必须是后者，
+        // 否则飞书收紧 1.0 时会出现"业务卡正常、自检卡发不出去"
+        assertTrue(json.contains("\"body\""), json);
+        assertTrue(json.contains("自检"), json);
     }
 
     // ---------------------------------------------------------------- 工具

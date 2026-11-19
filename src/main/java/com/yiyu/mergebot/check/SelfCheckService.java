@@ -5,6 +5,7 @@ import com.lark.oapi.service.im.v1.model.ListChatResp;
 import com.yiyu.mergebot.config.FeishuProperties;
 import com.yiyu.mergebot.config.PollProperties;
 import com.yiyu.mergebot.config.YunxiaoProperties;
+import com.yiyu.mergebot.feishu.CardFactory;
 import com.yiyu.mergebot.feishu.FeishuMessageService;
 import com.yiyu.mergebot.feishu.FeishuMessageService.ChatProbe;
 import com.yiyu.mergebot.feishu.FeishuWsRunner;
@@ -22,6 +23,7 @@ import java.io.File;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -66,10 +68,10 @@ public class SelfCheckService {
     private final FeishuMessageService messageService;
     private final FeishuWsRunner wsRunner;
     private final WebhookDebugStore debugStore;
+    private final CardFactory cardFactory;
 
     private final String serverPort;
     private final String serverAddress;
-    private final boolean testEndpoints;
 
     public SelfCheckService(YunxiaoClient yunxiao,
                             YunxiaoProperties yunxiaoProps,
@@ -78,9 +80,9 @@ public class SelfCheckService {
                             FeishuMessageService messageService,
                             FeishuWsRunner wsRunner,
                             WebhookDebugStore debugStore,
+                            CardFactory cardFactory,
                             @Value("${server.port:8080}") String serverPort,
-                            @Value("${server.address:}") String serverAddress,
-                            @Value("${mergebot.test-endpoints:false}") boolean testEndpoints) {
+                            @Value("${server.address:}") String serverAddress) {
         this.yunxiao = yunxiao;
         this.yunxiaoProps = yunxiaoProps;
         this.feishuProps = feishuProps;
@@ -88,9 +90,9 @@ public class SelfCheckService {
         this.messageService = messageService;
         this.wsRunner = wsRunner;
         this.debugStore = debugStore;
+        this.cardFactory = cardFactory;
         this.serverPort = serverPort;
         this.serverAddress = serverAddress;
-        this.testEndpoints = testEndpoints;
     }
 
     /**
@@ -108,10 +110,10 @@ public class SelfCheckService {
         // 如果某一组自己写崩了（空指针之类），不能让整个接口 500 —— 那样
         // 用户连"其它几组是好的"都看不到。崩掉的那组会变成一条 FAIL，
         // 说明这是自检自己的 bug，不是配置问题。
-        report.groups.add(safeGroup("一、配置文件", () -> checkConfig()));
-        report.groups.add(safeGroup("二、云效接口", () -> checkYunxiao()));
+        report.groups.add(safeGroup("一、配置文件", this::checkConfig));
+        report.groups.add(safeGroup("二、云效接口", this::checkYunxiao));
         report.groups.add(safeGroup("三、飞书", () -> checkFeishu(sendCard)));
-        report.groups.add(safeGroup("四、运行环境", () -> checkRuntime()));
+        report.groups.add(safeGroup("四、运行环境", this::checkRuntime));
 
         renumber(report);
         report.summarize();
@@ -120,7 +122,7 @@ public class SelfCheckService {
         // 有必须修的项时单独打一条 warn：验收的人不一定会打开这个接口，
         // 但部署完一定会看日志。这条能让人在日志里就发现"某个关键配置没填对"
         Result headline = report.firstToFix();
-        if (headline != null && headline.level == Level.FAIL) {
+        if (headline != null) {
             log.warn("自检有 {} 项必须修，最先要修的是 #{} {} —— {}",
                     report.getCounts().get("fail"), headline.no, headline.title, headline.detail);
         }
@@ -166,15 +168,18 @@ public class SelfCheckService {
             items.add(fail("必填配置项", detail.toString().trim()
                             + "；缺：" + String.join("、", missing),
                     "在 application.yml 里补齐上面标 ✗ 的项。服务器上改的是 jar 同级那份"
-                            + "（start.sh 用的就是它），改源码里的 application.yml 不生效"));
+                            + "（start.sh 用的就是它），改源码里的 application.yml 不生效。"
+                            + "注意模板里的「你的应用ID」这类中文占位值不算填过"));
         }
 
         // 02 触发方式
         boolean webhookReady = filled(yunxiaoProps.getWebhookToken());
         boolean pollOn = pollProps.isEnabled();
         if (webhookReady && pollOn) {
-            items.add(pass("触发方式", "Webhook 与轮询都开着。同一个请求可能收到两条通知，"
-                    + "长期用建议只留一条"));
+            items.add(warn("触发方式", "Webhook 和轮询同时开着。同一个合并请求会收到两张卡片 —— "
+                            + "两条链路各有一套去重规则，互相不认",
+                    "长期只留一条：有公网就关轮询（mergebot.poll.enabled: false），"
+                            + "没公网就清空 yunxiao.webhook-token"));
         } else if (webhookReady) {
             items.add(pass("触发方式", "云效 Webhook（需要公网能访问到本服务）"));
         } else if (pollOn) {
@@ -310,16 +315,31 @@ public class SelfCheckService {
         StringBuilder ok = new StringBuilder();
         List<String> bad = new ArrayList<>();
         int n = 0;
+        String networkDown = null;
+
         for (String id : repoIds) {
             if (n++ >= MAX_REPO_PROBE) {
                 break;
             }
             try {
-                String name = yunxiao.probeRepository(id);
-                ok.append(id).append("=").append(name).append("  ");
+                ok.append(id).append("=").append(yunxiao.probeRepository(id)).append("  ");
             } catch (Exception e) {
-                bad.add(id + "（" + shortReason(e.getMessage()) + "）");
+                String msg = e.getMessage() == null ? "" : e.getMessage();
+                if (isNetworkFailure(msg)) {
+                    // 第一个仓库就超时，说明是整体网络不通。接着探剩下几个只会再各等
+                    // 20 秒（读超时），把浏览器一路拖到网关超时（Nginx 默认 60 秒），
+                    // 用户看到的是 504 而不是这份报告 —— 那等于自检自己废掉了。
+                    networkDown = msg;
+                    break;
+                }
+                bad.add(id + "（" + shortReason(msg) + "）");
             }
+        }
+
+        if (networkDown != null) {
+            return fail("仓库编号有效", "网络不通，没法验证：" + networkDown,
+                    "先确认服务器能访问 " + yunxiaoProps.getDomain()
+                            + "（防火墙、DNS、代理）。和上面「令牌」那项一起看");
         }
         if (bad.isEmpty()) {
             return pass("仓库编号有效", ok.toString().trim()
@@ -329,6 +349,11 @@ public class SelfCheckService {
                         + (ok.length() > 0 ? "；正常的：" + ok.toString().trim() : ""),
                 "编号写错或者令牌没有这个仓库的权限。拿正确编号：调 /test/repos?name=仓库名，"
                         + "返回里的 repoId 就是。注意新版云效页面的地址栏已经不带仓库编号了");
+    }
+
+    /** 连不上、超时、DNS 失败归这一类；带 HTTP 状态码的是业务失败，不该短路 */
+    private boolean isNetworkFailure(String msg) {
+        return msg.contains("网络或超时");
     }
 
     private Result repoFailure(String title, String repoId, String raw) {
@@ -346,12 +371,26 @@ public class SelfCheckService {
 
     // ================================================================ 三、飞书
 
+    /** 编排四段：凭证 → 群与成员 → 长连接 → 发消息。具体判断在各段自己的方法里 */
     private List<Result> checkFeishu(boolean sendCard) {
         List<Result> items = new ArrayList<>();
         String chatId = feishuProps.getChatId();
 
-        // 01 应用凭证 + 列群。这一步同时证明 app-id/app-secret 和「获取群组信息」权限
-        boolean credentialOk = false;
+        boolean credentialOk = checkCredential(items, chatId);
+        boolean chatOk = checkChatAndMembers(items, chatId, credentialOk);
+        checkWs(items);
+        checkSendCard(items, chatId, chatOk, sendCard);
+
+        return items;
+    }
+
+    /**
+     * 01 应用凭证 + 列群。这一步同时证明 app-id/app-secret 和「获取群组信息」权限。
+     *
+     * @param chatId 配置的审批群，用来在群列表里确认它到底在不在
+     * @return 凭证与列群是否都通过；后面的群检查全部依赖它
+     */
+    private boolean checkCredential(List<Result> items, String chatId) {
         try {
             ListChatResp resp = messageService.listChats();
             if (resp == null || resp.getData() == null) {
@@ -360,84 +399,116 @@ public class SelfCheckService {
                 items.add(fail("应用凭证、能列群",
                         "接口返回是空的（code=" + (resp == null ? "无响应" : resp.getCode()) + "）",
                         "先确认 app-id / app-secret，再看有没有「获取群组信息」权限"));
-            } else {
-                credentialOk = true;
-                ListChat[] chats = resp.getData().getItems();
-                int n = chats == null ? 0 : chats.length;
-                boolean found = false;
-                if (chats != null) {
-                    for (ListChat c : chats) {
-                        if (c != null && chatId != null && chatId.equals(c.getChatId())) {
-                            found = true;
-                            break;
-                        }
+                return false;
+            }
+            ListChat[] chats = resp.getData().getItems();
+            int n = chats == null ? 0 : chats.length;
+            boolean found = false;
+            if (chats != null) {
+                for (ListChat c : chats) {
+                    if (c != null && chatId != null && chatId.equals(c.getChatId())) {
+                        found = true;
+                        break;
                     }
                 }
-                items.add(pass("应用凭证、能列群", "机器人所在群 " + n + " 个"
-                        + (n == 0 ? "" : found ? "，其中有配置的审批群" : "，但列表里没有配置的审批群")));
             }
+            items.add(pass("应用凭证、能列群", "机器人所在群 " + n + " 个"
+                    + (n == 0 ? "" : found ? "，其中有配置的审批群" : "，但列表里没有配置的审批群")));
+            return true;
         } catch (Exception e) {
             items.add(feishuCredentialFailure(e.getMessage()));
+            return false;
         }
+    }
 
-        // 02 群可访问、03 群成员、04 通讯录。三段放一个分支里判断：
-        // 后两段都依赖"群能访问"，拆开写会套三层 if，读起来比现在还费劲
-        boolean chatOk = false;
+    /**
+     * 02~04 群可访问、能查群成员、能换出人名。
+     *
+     * 三段写在一起，是因为后两段都依赖"群能访问"：拆成三个独立方法反而要在三处
+     * 重复判同一个前置条件，读的时候还得来回跳。
+     *
+     * @return 群是否可访问
+     */
+    private boolean checkChatAndMembers(List<Result> items, String chatId, boolean credentialOk) {
         if (!filled(chatId)) {
-            items.add(skip("审批群可访问", "chat-id 没填"));
-            items.add(skip("能查群成员", "chat-id 没填"));
-            items.add(skip("能换出人名", "chat-id 没填"));
-        } else if (!credentialOk) {
-            items.add(skip("审批群可访问", "上一步凭证没通过，跳过"));
-            items.add(skip("能查群成员", "上一步凭证没通过，跳过"));
-            items.add(skip("能换出人名", "上一步凭证没通过，跳过"));
-        } else {
-            ChatProbe probe = messageService.chatProfile(chatId);
-            chatOk = probe.isChatOk();
-
-            if (chatOk) {
-                items.add(pass("审批群可访问", "群「" + probe.getChatName() + "」可访问，机器人在群里"));
-            } else if (probe.getChatErrorCode() == FEISHU_NOT_IN_CHAT) {
-                items.add(fail("审批群可访问", "230002：机器人不在这个群里",
-                        "打开那个群 → 右上角设置 → 群机器人 → 添加机器人 → 选你这个应用。"
-                                + "加完立即生效，不用重启"));
-            } else if (probe.getChatErrorCode() == FEISHU_NO_PERMISSION) {
-                items.add(fail("审批群可访问", "99991672：缺「获取群组信息」权限",
-                        permissionFix("获取群组信息", "im:chat:readonly")));
-            } else if (probe.getChatErrorCode() > 0) {
-                items.add(fail("审批群可访问",
-                        "code=" + probe.getChatErrorCode() + " msg=" + probe.getChatErrorMsg(),
-                        "chat-id 写错的可能性最大。拿正确值：/test/chats 看机器人所在的群列表"));
-            } else {
-                items.add(fail("审批群可访问", probe.getChatErrorMsg(),
-                        "先确认服务器能不能访问 open.feishu.cn"));
-            }
-
-            if (!chatOk) {
-                items.add(skip("能查群成员", "上一项没通过，跳过"));
-                items.add(skip("能换出人名", "上一项没通过，跳过"));
-            } else if (probe.isMembersOk()) {
-                items.add(pass("能查群成员", "群成员 "
-                        + (probe.getMemberTotal() == null ? "?" : probe.getMemberTotal()) + " 人"));
-                if (probe.getSampleOpenId() == null) {
-                    items.add(skip("能换出人名", "群里没取到真人成员（可能只有机器人），没法试。"
-                            + "往群里拉一个人再跑一次"));
-                } else {
-                    items.add(checkContact(probe.getSampleOpenId()));
-                }
-            } else if (probe.getMembersErrorCode() == FEISHU_NO_PERMISSION) {
-                items.add(fail("能查群成员", "99991672：缺「查看群成员」权限",
-                        permissionFix("查看群成员", "im:chat.members:read")));
-                items.add(skip("能换出人名", "上一步没通过，跳过"));
-            } else {
-                items.add(fail("能查群成员",
-                        "code=" + probe.getMembersErrorCode() + " msg=" + probe.getMembersErrorMsg(),
-                        "多半还是权限问题，按上面的路径开「查看群成员」"));
-                items.add(skip("能换出人名", "上一步没通过，跳过"));
-            }
+            addGroupSkips(items, "chat-id 没填");
+            return false;
+        }
+        if (!credentialOk) {
+            addGroupSkips(items, "上一步凭证没通过，跳过");
+            return false;
         }
 
-        // 05 长连接：只影响按钮，不影响发卡片，但用户感知最强
+        ChatProbe probe = messageService.chatProfile(chatId);
+        items.add(chatAccessResult(probe));
+        addMembersAndContact(items, probe);
+        return probe.isChatOk();
+    }
+
+    /** 群这一组没法测时的三连跳过，保证报告里编号不空档 */
+    private void addGroupSkips(List<Result> items, String why) {
+        items.add(skip("审批群可访问", why));
+        items.add(skip("能查群成员", why));
+        items.add(skip("能换出人名", why));
+    }
+
+    private Result chatAccessResult(ChatProbe probe) {
+        if (probe.isChatOk()) {
+            // 群名不是关键信息，飞书没返回时给个占位，别输出「群「null」」
+            String name = StringUtils.hasText(probe.getChatName()) ? probe.getChatName() : "（群名未返回）";
+            return pass("审批群可访问", "群「" + name + "」可访问，机器人在群里");
+        }
+        if (probe.getChatErrorCode() == FEISHU_NOT_IN_CHAT) {
+            return fail("审批群可访问", "230002：机器人不在这个群里",
+                    "打开那个群 → 右上角设置 → 群机器人 → 添加机器人 → 选你这个应用。"
+                            + "加完立即生效，不用重启");
+        }
+        if (probe.getChatErrorCode() == FEISHU_NO_PERMISSION) {
+            return fail("审批群可访问", "99991672：缺「获取群组信息」权限",
+                    permissionFix("获取群组信息", "im:chat:readonly"));
+        }
+        if (probe.getChatErrorCode() > 0) {
+            return fail("审批群可访问",
+                    "code=" + probe.getChatErrorCode() + " msg=" + probe.getChatErrorMsg(),
+                    "chat-id 写错的可能性最大。拿正确值：/test/chats 看机器人所在的群列表");
+        }
+        return fail("审批群可访问", probe.getChatErrorMsg(),
+                "先确认服务器能不能访问 open.feishu.cn");
+    }
+
+    private void addMembersAndContact(List<Result> items, ChatProbe probe) {
+        if (!probe.isChatOk()) {
+            items.add(skip("能查群成员", "上一项没通过，跳过"));
+            items.add(skip("能换出人名", "上一项没通过，跳过"));
+            return;
+        }
+        if (!probe.isMembersOk()) {
+            items.add(membersFailure(probe));
+            items.add(skip("能换出人名", "上一项没通过，跳过"));
+            return;
+        }
+        items.add(pass("能查群成员", "群成员 "
+                + (probe.getMemberTotal() == null ? "?" : probe.getMemberTotal()) + " 人"));
+        if (probe.getSampleOpenId() == null) {
+            items.add(skip("能换出人名", "群里没取到真人成员（可能只有机器人），没法试。"
+                    + "往群里拉一个人再跑一次"));
+        } else {
+            items.add(checkContact(probe.getSampleOpenId()));
+        }
+    }
+
+    private Result membersFailure(ChatProbe probe) {
+        if (probe.getMembersErrorCode() == FEISHU_NO_PERMISSION) {
+            return fail("能查群成员", "99991672：缺「查看群成员」权限",
+                    permissionFix("查看群成员", "im:chat.members:read"));
+        }
+        return fail("能查群成员",
+                "code=" + probe.getMembersErrorCode() + " msg=" + probe.getMembersErrorMsg(),
+                "多半还是权限问题，按上面的路径开「查看群成员」");
+    }
+
+    /** 05 长连接：只影响按钮，不影响发卡片，但用户感知最强 */
+    private void checkWs(List<Result> items) {
         if (wsRunner.isConnected()) {
             items.add(pass("长连接（按钮回调）", "已建立，点卡片按钮会有反应"));
         } else {
@@ -446,8 +517,10 @@ public class SelfCheckService {
                             + "若报 1000040350 说明同一应用被多个进程连着（上限 50 条），"
                             + "ps -ef | grep java 查残留进程"));
         }
+    }
 
-        // 06 发消息权限：唯一的验证方式是真发一条
+    /** 06 发消息权限：唯一的验证方式是真发一条 */
+    private void checkSendCard(List<Result> items, String chatId, boolean chatOk, boolean sendCard) {
         if (!sendCard) {
             items.add(skip("能发消息", "本次没发卡片（地址栏加 ?card=true 才发）"));
         } else if (!chatOk) {
@@ -470,8 +543,6 @@ public class SelfCheckService {
                 }
             }
         }
-
-        return items;
     }
 
     private Result feishuCredentialFailure(String raw) {
@@ -532,28 +603,53 @@ public class SelfCheckService {
         items.add(pass("运行环境", "Java " + System.getProperty("java.version")
                 + " · " + System.getProperty("java.home")));
 
-        // 03 用的是哪份配置文件。这个是运维最容易搞混的一处：
-        //    start.sh 用 jar 同级目录启动，所以改源码里的 yml 不生效
-        File beside = new File(System.getProperty("user.dir"), "application.yml");
-        if (beside.isFile()) {
-            items.add(pass("配置文件来源", "当前目录下有 application.yml，"
-                    + "start.sh 启动时用的就是这份（改源码里的不生效）"));
-        } else {
-            items.add(pass("配置文件来源", "当前目录 " + System.getProperty("user.dir")
-                    + " 下没有 application.yml，用的是打包进 jar 的那份（IDE 本地跑就是这样）"));
-        }
+        // 03 用的是哪份配置文件。这是运维最容易搞混的一处：
+        //    start.sh 用 --spring.config.additional-location 指向 jar 同级，
+        //    所以改源码里的 yml 不生效。
+        //    这里不能用当前工作目录判断 —— 脚本并没有 cd 到安装目录，
+        //    从别处执行 start.sh 时工作目录是执行处，结论会正好反过来。
+        items.add(configSourceResult());
 
         // 04 有没有真的收到过云效推送。没收到过，说明云效那边或网络还没通
         items.add(checkLastWebhook());
 
-        // 05 排错接口本身的安全提醒
-        if (testEndpoints) {
-            items.add(warn("排错接口开关", "mergebot.test-endpoints 开着，"
-                            + "/test/* 谁都能调（包括发卡片）",
-                    "验收完改成 false 并重启。配了 Nginx 只暴露 /webhook/* 的话风险小一些"));
-        }
+        // 05 排错接口本身的安全提醒。能跑到这里就说明开关一定是开的
+        //    （本类只在 mergebot.test-endpoints=true 时才被创建），不用再判断
+        items.add(warn("排错接口开关", "mergebot.test-endpoints 开着，/test/* 谁都能调（包括发消息）",
+                "验收完改成 false 并重启。调的时候只用服务器本机 127.0.0.1，"
+                        + "别用公网地址，免得把群 ID 和仓库列表暴露在外面"));
 
         return items;
+    }
+
+    private Result configSourceResult() {
+        File location = codeLocation();
+        // 部署时 location 是 .../merge-bot.jar，父目录就是 start.sh 里的 APP_HOME；
+        // IDE 里是 target/classes，没有外部配置这一说
+        File home = location.isFile() ? location.getParentFile() : location;
+        File beside = new File(home, "application.yml");
+
+        if (beside.isFile()) {
+            return pass("配置文件来源", "用的是 " + beside.getAbsolutePath()
+                    + "（和 jar 同级，start.sh 加载的就是这份）");
+        }
+        if (location.isFile()) {
+            return fail("配置文件来源", home.getAbsolutePath() + " 下没有 application.yml，"
+                            + "现在用的是打包进 jar 的那份，改外面的配置不会生效",
+                    "把 application.yml 放到 " + home.getAbsolutePath() + "，和 jar 同级，再重启");
+        }
+        return pass("配置文件来源", "IDE 里跑，用的是 src/main/resources/application.yml");
+    }
+
+    /** 本类是从哪加载的：部署时是 jar 文件，IDE 里是 target/classes 目录 */
+    private File codeLocation() {
+        try {
+            return new File(SelfCheckService.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+        } catch (Exception e) {
+            log.debug("取自身加载位置失败，退回当前工作目录", e);
+            return new File(System.getProperty("user.dir", "."));
+        }
     }
 
     private Result checkLastWebhook() {
@@ -594,10 +690,12 @@ public class SelfCheckService {
         sb.append("======================================\n\n");
 
         Result first = report.firstToFix();
-        if (first == null) {
-            sb.append("没有需要修的项。\n\n");
-        } else {
+        if (first != null) {
             sb.append("最先要修：").append(first.no).append(" ").append(first.title).append("\n\n");
+        } else if (report.getCounts().getOrDefault("warn", 0) > 0) {
+            sb.append("没有必须修的项。标「待确认」的看一眼说明即可，不影响使用。\n\n");
+        } else {
+            sb.append("全部通过。\n\n");
         }
 
         for (Group g : report.groups) {
@@ -638,12 +736,25 @@ public class SelfCheckService {
         return ids;
     }
 
-    /** 空值，或还是 yml 里的占位样例 */
+    /**
+     * 空值，或还是模板里的占位值。
+     *
+     * 判断依据是"有没有中文字符"：真实凭据只可能是英文字母、数字、下划线和横线
+     * （cli_xxx / pt_xxx / oc_xxx / 十六进制组织 ID），出现中文就一定是从模板抄下来没改的
+     * 「你的应用ID」「自己定一个随机字符串」。
+     *
+     * 之前只认 "在这里" 和 "xxxx" 两种，结果把模板里那六个占位值全判成"已填"，
+     * 于是第 01 项报"配置都填好了"、第 06 项报"令牌过期" —— 自相矛盾，
+     * 还把本来只是"没填"的人引去云效查令牌到期时间。
+     */
     private boolean filled(String v) {
         if (!StringUtils.hasText(v)) {
             return false;
         }
-        return !v.startsWith("在这里") && !v.contains("xxxx");
+        if (v.contains("xxxx") || v.contains("XXXX")) {
+            return false;
+        }
+        return v.chars().allMatch(c -> c < 128);
     }
 
     private String shortReason(String msg) {
@@ -668,17 +779,11 @@ public class SelfCheckService {
     /** 自检发出的那张卡。刻意做得短，看到就说明「在群 + 能发消息」两件事都成了 */
     private String selfCheckCard() {
         String time = LocalDateTime.now().format(FMT);
-        return "{\"config\":{\"wide_screen_mode\":true},"
-                + "\"header\":{\"template\":\"blue\",\"title\":{\"tag\":\"plain_text\","
-                + "\"content\":\"合并审批机器人 · 自检\"}},"
-                + "\"elements\":["
-                + "{\"tag\":\"div\",\"text\":{\"tag\":\"lark_md\",\"content\":"
-                + "\"能看到这张卡片，说明 **机器人已经在群里**，并且 **有发消息权限**。\"}},"
-                + "{\"tag\":\"div\",\"text\":{\"tag\":\"lark_md\",\"content\":"
-                + "\"其余检查结果（云效令牌、群成员、按钮回调）看 /test/doctor 的返回。\"}},"
-                + "{\"tag\":\"note\",\"elements\":[{\"tag\":\"plain_text\",\"content\":"
-                + "\"由自检接口自动发出 · " + time + " · 可以忽略\"}]}"
-                + "]}";
+        return cardFactory.noticeCard("合并审批机器人 · 自检",
+                Arrays.asList(
+                        "能看到这张卡片，说明 **机器人已经在群里**，并且 **有发消息权限**。",
+                        "其余检查结果（云效令牌、群成员、按钮回调）看 /test/doctor 的返回。"),
+                "由自检接口自动发出 · " + time + " · 可以忽略");
     }
 
     private void renumber(Report report) {
@@ -826,20 +931,22 @@ public class SelfCheckService {
             }
         }
 
-        /** 第一个必须修的项；没有就退而取第一个待确认；都没有返回 null */
+        /**
+         * 第一个必须修的项，没有就返回 null。
+         *
+         * **只认 FAIL**。以前没有 FAIL 时会退而返回第一个「待确认」，而写权限那一项
+         * 永远是待确认 —— 结果每次自检都打印"最先要修：合并 / 关闭的写权限"，
+         * 让用户去修一件根本不需要修、也修不了的事。跑三次之后整份报告就没人看了。
+         */
         Result firstToFix() {
-            Result warn = null;
             for (Group g : groups) {
                 for (Result r : g.items) {
                     if (r.level == Level.FAIL) {
                         return r;
                     }
-                    if (r.level == Level.WARN && warn == null) {
-                        warn = r;
-                    }
                 }
             }
-            return warn;
+            return null;
         }
 
         public String getTime() {
