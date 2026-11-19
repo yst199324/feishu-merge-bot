@@ -15,12 +15,15 @@ import com.yiyu.mergebot.yunxiao.YunxiaoClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,6 +57,7 @@ public class TestController {
     private final YunxiaoClient yunxiao;
     private final ObjectProvider<MergeRequestPoller> poller;
     private final com.yiyu.mergebot.support.WebhookDebugStore webhookDebug;
+    private final com.yiyu.mergebot.check.SelfCheckService selfCheck;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public TestController(FeishuMessageService messageService,
@@ -61,13 +65,44 @@ public class TestController {
                           CardFactory cardFactory,
                           YunxiaoClient yunxiao,
                           ObjectProvider<MergeRequestPoller> poller,
-                          com.yiyu.mergebot.support.WebhookDebugStore webhookDebug) {
+                          com.yiyu.mergebot.support.WebhookDebugStore webhookDebug,
+                          com.yiyu.mergebot.check.SelfCheckService selfCheck) {
         this.messageService = messageService;
         this.feishuProps = feishuProps;
         this.cardFactory = cardFactory;
         this.yunxiao = yunxiao;
         this.poller = poller;
         this.webhookDebug = webhookDebug;
+        this.selfCheck = selfCheck;
+    }
+
+    /**
+     * 一键自检：把云效令牌、飞书权限、机器人在不在群、按钮回调、Webhook 是否来过
+     * 全部查一遍，按「通过 / 待确认 / 需要修 / 跳过」列出来，每项都写清怎么修。
+     *
+     * 用法（浏览器直接打开就行，不用传任何参数）：
+     *   http://127.0.0.1:18123/test/doctor
+     *
+     * 两个可选参数：
+     *   ?card=false   不发测试卡片（默认会发一张到群里）
+     *   ?format=json  给脚本用，默认是纯文本
+     *
+     * 检测全部只读，唯一副作用就是那张自检卡。可以反复跑。
+     */
+    @GetMapping("/doctor")
+    public ResponseEntity<Object> doctor(@RequestParam(defaultValue = "true") boolean card,
+                                         @RequestParam(defaultValue = "text") String format) {
+        com.yiyu.mergebot.check.SelfCheckService.Report report = selfCheck.run(card);
+        if ("json".equalsIgnoreCase(format)) {
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(report);
+        }
+        // 字符集必须显式写死：Spring 对 String 默认用 ISO-8859-1，
+        // 不指定的话浏览器里中文会变成一片问号
+        return ResponseEntity.ok()
+                .contentType(new MediaType("text", "plain", StandardCharsets.UTF_8))
+                .body(selfCheck.render(report));
     }
 
     /**

@@ -53,6 +53,15 @@ public class FeishuWsRunner implements ApplicationRunner, DisposableBean {
     /** 长连接线程。关闭时要中断它，否则非守护线程会让 JVM 退不掉，只能被 kill -9 */
     private volatile Thread wsThread;
 
+    /**
+     * 长连接是否已经建立。
+     *
+     * 供 /test/doctor 读取。这个状态没法从别处推断：卡片能不能发出去跟它无关
+     * （发消息走的是另一条 HTTP 通道），只有"点按钮没反应"才跟它有关。
+     * 所以自检必须能直接看到这一位，否则只能靠人去日志里搜那行中文。
+     */
+    private volatile boolean connected;
+
     public FeishuWsRunner(FeishuProperties props, CardActionHandler cardActionHandler) {
         this.props = props;
         this.cardActionHandler = cardActionHandler;
@@ -82,6 +91,7 @@ public class FeishuWsRunner implements ApplicationRunner, DisposableBean {
                     // ★ 走到这里代表"已经连上了"，不是"退出了"。
                     // 千万别 return 回循环顶部——那会每轮新建一条连接，最后撞 50 上限。
                     log.info("飞书长连接已建立，断线由 SDK 自动重连，本线程保持存活不再新建连接");
+                    connected = true;
                     backoffMs = 5000L;
 
                     while (!Thread.currentThread().isInterrupted()) {
@@ -90,6 +100,8 @@ public class FeishuWsRunner implements ApplicationRunner, DisposableBean {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 } catch (Throwable e) {
+                    // 连不上、或用着用着断了都会走到这里，自检据此报"按钮点不动"
+                    connected = false;
                     String msg = e.getMessage() == null ? e.toString() : e.getMessage();
                     if (isConnectionLimited(msg)) {
                         // 这条错误堆栈对排查没帮助，只打一句人能看懂的话 + 该去查什么
@@ -130,6 +142,12 @@ public class FeishuWsRunner implements ApplicationRunner, DisposableBean {
             log.info("正在关闭飞书长连接线程...");
             t.interrupt();
         }
+        connected = false;
+    }
+
+    /** 供 /test/doctor 判断"按钮点了会不会有反应" */
+    public boolean isConnected() {
+        return connected;
     }
 
     /** 飞书的"连接数超限"错误码。单独识别出来，是为了打一句有用的话而不是甩堆栈 */

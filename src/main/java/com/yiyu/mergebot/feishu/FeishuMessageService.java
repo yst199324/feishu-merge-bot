@@ -12,11 +12,14 @@ import com.lark.oapi.service.im.v1.model.CreateMessageReqBody;
 import com.lark.oapi.service.im.v1.model.CreateMessageResp;
 import com.lark.oapi.service.im.v1.model.GetChatMembersReq;
 import com.lark.oapi.service.im.v1.model.GetChatMembersResp;
+import com.lark.oapi.service.im.v1.model.GetChatReq;
+import com.lark.oapi.service.im.v1.model.GetChatResp;
 import com.lark.oapi.service.im.v1.model.ListChatReq;
 import com.lark.oapi.service.im.v1.model.ListChatResp;
 import com.lark.oapi.service.im.v1.model.ListMember;
 import com.yiyu.mergebot.config.FeishuProperties;
 import com.yiyu.mergebot.support.Texts;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -394,7 +397,92 @@ public class FeishuMessageService {
         }
     }
 
+    /**
+     * 自检专用：一次拿到群名、成员总人数、一个可用的真人 open_id。
+     *
+     * 和 {@link #isGroupMember} 的区别是**不碰成员缓存**。那个缓存存 300 秒，
+     * 自检如果读缓存，"缓存里恰好有"就会变成假通过——而自检的全部意义
+     * 就是"此刻飞书那边到底怎么答"。所以这里每次直连。
+     *
+     * 两个阶段各留一组错误码：群访问不了和"群能访问但拉不到成员"是两回事，
+     * 后者覆盖前者会让排查方向跑偏。
+     */
+    public ChatProbe chatProfile(String chatId) {
+        ChatProbe probe = new ChatProbe();
+        if (!StringUtils.hasText(chatId)) {
+            probe.setChatErrorMsg("chat-id 是空的");
+            return probe;
+        }
+        try {
+            GetChatResp chat = client.im().chat().get(GetChatReq.newBuilder().chatId(chatId).build());
+            if (chat.success() && chat.getData() != null) {
+                probe.setChatOk(true);
+                probe.setChatName(chat.getData().getName());
+            } else {
+                probe.setChatErrorCode(chat.getCode());
+                probe.setChatErrorMsg(chat.getMsg());
+                return probe;
+            }
+        } catch (Exception e) {
+            probe.setChatErrorMsg("调用异常：" + e.getMessage());
+            return probe;
+        }
+        // 群能访问才继续拉成员：不在群的时候拉成员必然也失败，多调一次只是多等一次
+        try {
+            GetChatMembersResp resp = client.im().chatMembers().get(GetChatMembersReq.newBuilder()
+                    .chatId(chatId)
+                    .memberIdType("open_id")
+                    .pageSize(50)
+                    .build());
+            if (resp.success() && resp.getData() != null) {
+                probe.setMembersOk(true);
+                probe.setMemberTotal(resp.getData().getMemberTotal());
+                probe.setSampleOpenId(firstHuman(resp.getData().getItems()));
+            } else {
+                probe.setMembersErrorCode(resp.getCode());
+                probe.setMembersErrorMsg(resp.getMsg());
+            }
+        } catch (Exception e) {
+            probe.setMembersErrorMsg("调用异常：" + e.getMessage());
+        }
+        return probe;
+    }
+
+    /** 群里第一个"有名字、且是 open_id 类型"的成员，用来试通讯录接口 */
+    private String firstHuman(ListMember[] members) {
+        if (members == null) {
+            return null;
+        }
+        for (ListMember m : members) {
+            if (m != null
+                    && StringUtils.hasText(m.getMemberId())
+                    && "open_id".equals(m.getMemberIdType())
+                    && StringUtils.hasText(m.getName())) {
+                return m.getMemberId();
+            }
+        }
+        return null;
+    }
+
     public String defaultChatId() {
         return props.getChatId();
+    }
+
+    /**
+     * 群探测结果，供自检使用。
+     */
+    @Data
+    public static class ChatProbe {
+        private boolean chatOk;
+        private String chatName;
+        private int chatErrorCode;
+        private String chatErrorMsg;
+        private boolean membersOk;
+        /** 群成员总人数，飞书没返回时是 null */
+        private Integer memberTotal;
+        /** 用来试通讯录接口的样本成员；群里只有机器人时为 null */
+        private String sampleOpenId;
+        private int membersErrorCode;
+        private String membersErrorMsg;
     }
 }

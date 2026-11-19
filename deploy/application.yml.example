@@ -48,7 +48,8 @@ yunxiao:
   webhook-token: "自己定一个随机字符串"
 
 mergebot:
-  # 公网部署必须 false，否则任何人都能调 /test/* 让机器人发卡片
+  # 公网部署必须 false，否则任何人都能调 /test/* 让机器人发卡片。
+  # 这个开关同时管着 /test/doctor（一键自检）。验收时临时改成 true，验完改回来。
   test-endpoints: false
 
   # 把云效推送的报文原文整段打进日志，排错全靠它。

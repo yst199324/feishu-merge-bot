@@ -102,6 +102,29 @@ public class YunxiaoClient {
     }
 
     /**
+     * 自检专用：直接查一次仓库详情，**不读名字缓存、也不读配置里的名字映射**。
+     *
+     * 为什么不复用 {@link #getRepositoryName}：那个方法为了少调接口，
+     * 先查 yunxiao.repos 映射、再查内存缓存，查不到还会吞掉异常返回空串。
+     * 自检要的是"这个编号在云效那边到底存不存在、这个令牌到底有没有权限"，
+     * 任何一层缓存都会让结果变成"看起来通过"，所以这里必须直连。
+     *
+     * @return 仓库显示名
+     * @throws YunxiaoException 仓库不存在（404）、没权限（403）、或网络不通
+     */
+    public String probeRepository(String repoId) {
+        if (!StringUtils.hasText(repoId)) {
+            throw new YunxiaoException("仓库编号是空的");
+        }
+        JsonNode data = call(HttpMethod.GET, base(repoId), null);
+        String name = stripOrgPrefix(firstText(data, "pathWithNamespace", "path_with_namespace", "name"));
+        if (!StringUtils.hasText(name)) {
+            throw new YunxiaoException("接口通了但返回里没有仓库名，编号可能写错了");
+        }
+        return name;
+    }
+
+    /**
      * 按名称模糊查代码库，用来把"仓库名"换成"仓库 ID"。
      *
      * 为什么需要：云效新版页面的地址栏里已经不带仓库 ID 了
