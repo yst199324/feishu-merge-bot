@@ -21,7 +21,10 @@ spring:
     import: optional:file:./.env[.properties]
 
 server:
-  port: 8081
+  # 端口也能从 .env 覆盖（.env 里写 SERVER_PORT=18123）。
+  # 这样服务器那份 application.yml 和仓库里这份可以完全一致，
+  # 改完直接整份覆盖过去，不会把服务器的端口冲掉。
+  port: ${SERVER_PORT:8081}
   # 配好 Nginx 反代、只暴露 /webhook/* 之后，把下面这行的注释去掉，
   # 让 8081 只监听本机，别让它直接对公网（多一层保护）。
   # address: 127.0.0.1
@@ -35,10 +38,14 @@ logging:
 
 mergebot:
   # 排错接口（/test/*，含 /test/doctor 一键自检）的开关。
-  # 本地调试设 true；部署到公网后**必须改成 false**，否则任何人都能调它发卡片。
-  # 自检接口会读出群 ID、仓库列表和各项配置状态，和 /test/* 同一个开关管着。
+  # 本地默认开着（true）；服务器在 .env 里写 TEST_ENDPOINTS=false 关掉。
+  #
+  # 为什么这里是个占位符而不是写死 true：这个文件会被整份覆盖到服务器。
+  # 写死 true 的话，每次覆盖都会把公网上的调试接口重新打开 ——
+  # 那是一个谁都能调、能往群里发卡片的接口。写成 ${TEST_ENDPOINTS:true}
+  # 之后，开关状态由各机器自己的 .env 决定，覆盖 yml 不会动它。
   # 配了 Nginx 反代的话，/test/* 本来就被挡在外面，但双保险更省心。
-  test-endpoints: true
+  test-endpoints: ${TEST_ENDPOINTS:true}
 
   # 是否把云效推过来的 webhook 报文**原文整段**打进日志（默认 true）。
   # 开着的好处：字段名对不上、事件被忽略这类问题，看一眼原文就能定位，

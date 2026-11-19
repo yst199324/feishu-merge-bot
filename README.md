@@ -366,7 +366,7 @@ cp .env.example .env
 
 没写进 `.env` 的项会回落到 `application.yml` 里的默认值。必填项还留着占位值时，服务启动会直接报 `配置项 [xxx] 未填写` 并退出 —— 不是 bug，是故意的，防止“看起来在跑、其实调不通”。
 
-`.env` 已被 `.gitignore` 排除，不会推到 GitHub。**部署到服务器不用 `.env`**，改 jar 同级那份 `application.yml`（见第九章）。
+`.env` 已被 `.gitignore` 排除，不会推到 GitHub。**服务器上也用同一套**：jar 同级放一份这台服务器自己的 `.env`，`application.yml` 只放结构、可以整份覆盖（见第九章）。
 
 #### `.env` 和真正的环境变量，用哪个？
 
@@ -392,7 +392,7 @@ cp .env.example .env
 几个值得知道的默认值（这些不敏感，留在 yml 里就行）：
 
 - `feishu.allow-group-members: true` —— **审批群里的人都能点按钮**，加人减人自动生效，不用维护名单（推荐就用这个）
-- `mergebot.test-endpoints: true` —— 打开调试接口 `/test/*` 和自检接口。**验收完就改成 `false`**，否则谁都调得动它
+- `TEST_ENDPOINTS`（写在 `.env` 里）—— 调试接口 `/test/*` 的开关，本地默认 `true`。**服务器上必须在 `.env` 里写 `false`**，否则谁都调得动它
 - `mergebot.log-webhook-raw: true` —— 把云效推来的报文原文打进日志，排错全靠它
 
 两条容易踩的：
@@ -443,7 +443,7 @@ Started MergeBotApplication in xxx seconds
 
 ### 7.1 怎么用
 
-**前提：`mergebot.test-endpoints` 必须是 `true`。** 这个开关默认在本地配置里是开的、在部署模板里是关的（公网安全默认值），关着时访问会得到 404 —— 见 [9.3](#93-日常三条命令) 里"验收时怎么临时打开"。
+**前提：`TEST_ENDPOINTS` 必须是 `true`。** 本地默认开着；服务器上默认关（`.env` 里写的是 `false`），关着时访问会得到 404 —— 见 [9.3](#93-日常三条命令) 里"验收时怎么临时打开"。
 
 浏览器直接打开，不用传任何参数：
 
@@ -615,26 +615,48 @@ curl 127.0.0.1:8081/test/last-webhook
 
 ```
 /你的目录/mergebot/
-├── merge-bot.jar            # mvn package 的产物
-├── application.yml          # 从 deploy/application.yml.example 复制一份再改
+├── merge-bot.jar        # mvn package 的产物
+├── application.yml      # 直接用 src/main/resources/application.yml 覆盖过来
+├── .env                 # 本机专属的真实值，从 deploy/.env.example 复制
 ├── start.sh
 ├── stop.sh
 └── restart.sh
 ```
 
-`deploy/application.yml`（真实配置，含密钥）和 `deploy/*.jar` 都在 `.gitignore` 里，不会进仓库。仓库里只有模板 `application.yml.example`。
+关键设计：**`application.yml` 只描述结构，不含任何真实值**。里面的凭据、端口、调试开关全是 `${KEY:占位}` 形式，真实值统一从同目录的 `.env` 读。
 
-### 9.2 改两个地方才能跑
+好处有两个：
 
-**① 配置文件**
+1. 本地改完 `application.yml`（加配置、改注释），**整份覆盖到服务器就行**，不会冲掉服务器上的凭据
+2. 服务器和本地只有 `.env` 不一样，那份永远不用动
+
+`deploy/application.yml`、`deploy/.env`、`deploy/*.jar` 都在 `.gitignore` 里。仓库里只有模板：`deploy/application.yml.example`、`deploy/.env.example`。
+
+### 9.2 三步配好
+
+**① 放配置文件：不用改任何值**
 
 ```bash
-cp deploy/application.yml.example deploy/application.yml
+cp src/main/resources/application.yml /你的目录/mergebot/application.yml
 ```
 
-然后填里面的必填项。注意模板里的端口是 **18123**，和本地 `src/main/resources/application.yml` 的 **8081** 不是一个值，按你实际部署的来。
+**② 建 .env：填这台服务器自己的值**
 
-**② 启动脚本里的 JDK 路径**
+```bash
+cp deploy/.env.example /你的目录/mergebot/.env
+vi /你的目录/mergebot/.env
+```
+
+六项凭据（飞书 app-id/secret、群 ID、云效 token、组织 ID、webhook-token）的获取方式见第四章、第五章。另外两项是服务器专属的：
+
+| 变量 | 填什么 |
+|---|---|
+| `SERVER_PORT` | 服务监听端口，比如 `18123`。填完云效 Webhook 的 URL 要对应成 `http://你的公网IP:18123/webhook/yunxiao` |
+| `TEST_ENDPOINTS` | **必须是 `false`**。模板里已经写好了，别删 |
+
+> `TEST_ENDPOINTS` 这一项最容易漏。它的默认值是 `true`（本地调试方便），服务器上不显式关掉，`/test/*` 就在公网上敞着，谁都能调它往审批群发卡片。
+
+**③ 改 start.sh 里的 JDK 路径**
 
 `deploy/start.sh` 第 31 行写死了：
 
@@ -666,22 +688,23 @@ tail -f logs/console.log             # 启动阶段的输出（logback 生效前
 tail -f logs/merge-bot-audit.log     # 谁在什么时候点了什么、结果如何，保留一年
 ```
 
-部署完第一件事：跑一次自检。但先注意一件事 —— **部署模板里 `test-endpoints` 是 `false`**（公网安全默认值），这时访问会返回 404，不是功能坏了。
+部署完第一件事：跑一次自检。但先注意 —— `.env` 里 `TEST_ENDPOINTS` 是 `false`（公网安全默认值），这时访问会返回 404，不是功能坏了。
 
 ```bash
-# 1. 临时打开调试接口
-sed -i 's/^  test-endpoints: false/  test-endpoints: true/' application.yml
+# 1. 临时打开调试接口。改 .env，不要改 application.yml
+#    （改 yml 的话，下次整份覆盖回来又会被重置）
+sed -i 's/^TEST_ENDPOINTS=.*/TEST_ENDPOINTS=true/' .env
 ./restart.sh
 
 # 2. 跑自检（card=false 表示不往群里发测试卡片，验收阶段建议关掉）
 curl "127.0.0.1:18123/test/doctor?card=false"
 
 # 3. 验完立刻改回去，再重启一次
-sed -i 's/^  test-endpoints: true/  test-endpoints: false/' application.yml
+sed -i 's/^TEST_ENDPOINTS=.*/TEST_ENDPOINTS=false/' .env
 ./restart.sh
 ```
 
-> 不想用 sed 就打开 `application.yml` 手动改这一行，效果一样。
+> 不想用 sed 就 `vi .env` 手动改这一行，效果一样。
 >
 > **第 3 步别忘。** 这个接口能让机器人往群里发卡片、能读出群 ID 和仓库列表，留在公网等于一个没上锁的控制台。
 
@@ -720,7 +743,7 @@ mergebot:
 |---|---|---|
 | `server.port` | 8081 | 监听端口，云效 Webhook 的 URL 用它 |
 | `server.address` | 空（所有网卡） | 填 `127.0.0.1` 后只有本机能连，适合前面挂 Nginx 反代 |
-| `mergebot.test-endpoints` | true | `/test/*` 调试接口和自检接口的开关，**公网部署必须改 false** |
+| `TEST_ENDPOINTS`（写在 .env） | true | `/test/*` 调试接口和自检接口的开关，**服务器上必须在 .env 里写 false** |
 | `mergebot.log-webhook-raw` | true | 是否把报文原文打进日志 |
 | `mergebot.use-payload-commit` | true | 优先用报文里的最近提交，省一次接口调用。改 false 会列出全部提交，但令牌要多勾一项「代码比较 → 只读」 |
 

@@ -63,6 +63,16 @@ if [ ! -f "$APP_HOME/application.yml" ]; then
     exit 1
 fi
 
+# .env 放的是本机专属的真实值（凭据 + 端口），application.yml 里只有 ${} 占位。
+# 缺了它不影响启动流程，但凭据会回落成占位值，启动校验会报"配置项未填写"。
+# 所以这里只提示、不退出 —— 凭据也可能是通过系统环境变量提供的。
+if [ ! -f "$APP_HOME/.env" ]; then
+    echo "[提示] 没有找到 $APP_HOME/.env"
+    echo "       凭据若是用系统环境变量提供的，忽略这条；"
+    echo "       否则启动会报「配置项 [xxx] 未填写」，模板见同目录 .env.example"
+    echo ""
+fi
+
 # 已经在跑就别重复启动，否则两个进程抢同一个端口，日志也会混在一起
 if [ -f "$PID_FILE" ]; then
     OLD_PID="$(cat "$PID_FILE")"
