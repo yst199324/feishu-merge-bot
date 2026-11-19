@@ -67,4 +67,27 @@ class WebhookGuardTest {
         both.set("X-Gitlab-Token", "gitlab");
         assertEquals("codeup", guard("codeup").tokenOf(both));
     }
+
+    @Test
+    @DisplayName("投递编号从 X-Codeup-Delivery 取")
+    void deliveryFromCodeupHeader() {
+        HttpHeaders h = new HttpHeaders();
+        h.set("X-Codeup-Delivery", "83fd7702-a9d1-46ca-9c05-058bcb084b89");
+        assertEquals("83fd7702-a9d1-46ca-9c05-058bcb084b89", guard("x").deliveryOf(h));
+    }
+
+    @Test
+    @DisplayName("没带投递编号时退回 GitLab 的老头名")
+    void deliveryFallsBackToGitlabUuid() {
+        HttpHeaders h = new HttpHeaders();
+        h.set("X-Gitlab-Event-UUID", "uuid-old");
+        assertEquals("uuid-old", guard("x").deliveryOf(h));
+    }
+
+    @Test
+    @DisplayName("两个头都没有时返回空串，交给调用方报错——绝不能返回 null 拼进键里")
+    void deliveryEmptyWhenMissing() {
+        assertEquals("", guard("x").deliveryOf(new HttpHeaders()));
+        assertEquals("", guard("x").deliveryOf(null));
+    }
 }

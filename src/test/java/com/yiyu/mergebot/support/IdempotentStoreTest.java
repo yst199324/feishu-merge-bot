@@ -34,6 +34,29 @@ class IdempotentStoreTest {
     }
 
     @Test
+    @DisplayName("有效期到了就放行，不会因为一条旧记录把用户永久锁死")
+    void expiredKeyPassesAgain() throws Exception {
+        IdempotentStore store = new IdempotentStore();
+        assertTrue(store.firstTime("k", 50));
+        assertFalse(store.firstTime("k", 50));
+        Thread.sleep(80);
+        assertTrue(store.firstTime("k", 50), "超过有效期后应该重新放行");
+    }
+
+    @Test
+    @DisplayName("两类键各用自己的有效期，短窗口的记录不会影响长窗口")
+    void ttlIsPerKey() {
+        IdempotentStore store = new IdempotentStore();
+        // 推送去重：默认 30 分钟
+        assertTrue(store.firstTime("push-1"));
+        // 按钮防连点：60 秒
+        assertTrue(store.firstTime("click-1", IdempotentStore.CLICK_TTL_MILLIS));
+
+        assertFalse(store.firstTime("push-1"));
+        assertFalse(store.firstTime("click-1", IdempotentStore.CLICK_TTL_MILLIS));
+    }
+
+    @Test
     @DisplayName("同一个键短时间内的并发调用只有一个能过")
     void concurrentOnlyOneWins() throws Exception {
         IdempotentStore store = new IdempotentStore();

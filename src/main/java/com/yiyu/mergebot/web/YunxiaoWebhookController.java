@@ -135,10 +135,17 @@ public class YunxiaoWebhookController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body("forbidden");
         }
 
-        // 云效要求快速响应，慢了自己会重推；业务异常吞掉，不让它等
+        // 云效要求快速响应，慢了自己会重推；业务异常吞掉，不让它等。
+        //
+        // 只有一种例外：该发卡的合并请求事件却没带投递编号——那是真错误，
+        // 必须回 400 让云效看见，不能混在 200 里静默过去（静默就等于永久丢卡片）。
         String note;
         try {
-            note = dispatch(raw);
+            note = dispatch(raw, guard.deliveryOf(headers));
+        } catch (MissingDeliveryException e) {
+            log.error(e.getMessage());
+            debugStore.record(token, true, "缺少 X-Codeup-Delivery 头，已丢弃", raw);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("missing X-Codeup-Delivery");
         } catch (Exception e) {
             log.error("处理云效事件失败", e);
             note = "处理异常：" + e.getMessage();
@@ -148,9 +155,14 @@ public class YunxiaoWebhookController {
     }
 
     /**
+     * 判断这份报文要不要处理，要处理的才去重、发卡。
+     *
+     * @param raw        报文原文，只用于打日志和错误提示
+     * @param deliveryId 云效投递编号，缺失时抛 {@link MissingDeliveryException}；
+     *                   可以为空——非合并请求事件不需要它
      * @return 处理结果说明，写进 /test/last-webhook，方便对着看是哪一步没走通
      */
-    private String dispatch(String raw) throws Exception {
+    private String dispatch(String raw, String deliveryId) throws Exception {
         JsonNode root = mapper.readTree(raw);
         String kind = text(root, "object_kind", "objectKind");
         if (!"merge_request".equals(kind)) {
@@ -166,6 +178,17 @@ public class YunxiaoWebhookController {
             return "忽略：action=" + action + "（只处理 open/reopen，update 不重复提醒）";
         }
 
+        // 走到这里才是真要去重、要发卡的事件，投递编号必须有。
+        //
+        // 校验放在这个位置而不是入口处，是为了不让云效「测试」按钮（推送事件）
+        // 也被判成 400——那类事件本来就该忽略，为它报错只会把日志刷满，
+        // 真出问题时反而看不出是哪一条有毛病。
+        if (!StringUtils.hasText(deliveryId)) {
+            throw new MissingDeliveryException(
+                    "合并请求事件没带 X-Codeup-Delivery 头，无法去重，本次丢弃。"
+                            + "检查 Nginx/网关是否配了 proxy_set_header 白名单，把未知请求头滤掉了");
+        }
+
         String repoId = repoIdOf(root, attrs);
         String localId = localIdOf(attrs);
 
@@ -175,12 +198,39 @@ public class YunxiaoWebhookController {
                     + "。看报文里的 object_attributes 再核对字段映射";
         }
 
-        // 云效重推、或人工重复触发时，避免同一件事发好几张卡
-        if (!idempotent.firstTime("yx:" + repoId + ":" + localId + ":" + action)) {
-            log.info("该事件已处理过，跳过 repo={} mr={} action={}", repoId, localId, action);
-            return "跳过：这件事已经发过卡片了（幂等去重）";
+        // 投递级去重：同一个投递编号就是同一份报文，重推多少次都只处理一次。
+        //
+        // ⚠️ 键里**只能有投递编号**，不拼动作名。之前是"仓库+编号+动作名"，
+        // 结果同一个请求"关掉-重开-再关掉-再重开"时，两次 reopen 的键完全一样，
+        // 第二次重开的卡片被当成重复静默丢掉——审批链直接断在那里，而且日志看着一切正常。
+        String dedupKey = "yx:dlv:" + deliveryId;
+        if (!idempotent.firstTime(dedupKey)) {
+            log.info("该投递已处理过，跳过 delivery={} repo={} mr={} action={}",
+                    deliveryId, repoId, localId, action);
+            return "跳过：这条投递已经发过卡片了 delivery=" + deliveryId;
         }
 
+        try {
+            return pushCard(root, attrs, repoId, localId, deliveryId);
+        } catch (Exception e) {
+            // 发卡失败必须撤销登记：否则云效后台点「重新投递」会被当成重复请求挡掉，
+            // 这张卡片再也没有补发的机会。撤销后重投会重新走一遍，最坏是多一张卡。
+            idempotent.forget(dedupKey);
+            throw e;
+        }
+    }
+
+    /**
+     * 组装并发送审批卡片。
+     *
+     * 从 dispatch 里拆出来，是为了让两件事各归各位：
+     * dispatch 只判断"这份报文该不该处理"，这里只负责"怎么把卡片发出去"。
+     * 混在一起时方法接近 90 行，排查失败时看不出是判断错了还是发送错了。
+     *
+     * @param deliveryId 只用于日志，方便和云效后台的投递记录逐条对号
+     */
+    private String pushCard(JsonNode root, JsonNode attrs, String repoId, String localId,
+                            String deliveryId) throws Exception {
         // 仓库名优先用云效接口查到的（带组名的完整路径），报文里通常只有短名。
         // 短名在多个项目共用一个群时容易混淆，所以能查到完整的就用完整的。
         String repoName = payloadRepoName(root, attrs);
@@ -222,9 +272,11 @@ public class YunxiaoWebhookController {
         String card = cardFactory.approvalCard(repoName, repoId, localId, mr, commits,
                 webUrl, latestOnly);
         String messageId = messageService.sendCard(feishuProps.getChatId(), card);
-        log.info("已推送审批卡片 repo={} mr={} 提交数={} 来源={} messageId={}",
-                repoId, localId, commits.size(), latestOnly ? "报文 last_commit" : "比较分支接口", messageId);
-        return "成功：已发卡片 repo=" + repoId + " mr=" + localId + " 提交数=" + commits.size()
+        log.info("已推送审批卡片 repo={} mr={} 投递={} 提交数={} 来源={} messageId={}",
+                repoId, localId, deliveryId, commits.size(),
+                latestOnly ? "报文 last_commit" : "比较分支接口", messageId);
+        return "成功：已发卡片 repo=" + repoId + " mr=" + localId + " 投递=" + deliveryId
+                + " 提交数=" + commits.size()
                 + " 提交来源=" + (latestOnly ? "报文" : "接口") + " messageId=" + messageId;
     }
 
@@ -369,5 +421,18 @@ public class YunxiaoWebhookController {
             return "******（长度 " + value.length() + "）";
         }
         return value.substring(0, 4) + "******（长度 " + value.length() + "）";
+    }
+
+    /**
+     * 该去重的事件却没带投递编号。
+     *
+     * 单独定义一种异常，是为了让入口能把它和"业务处理失败"分开走：
+     * 这个要回 400 让云效看见（否则卡片永远发不出来而且没人知道），
+     * 其他异常按既有约定吞掉回 200，不让云效因为我们的问题反复重推。
+     */
+    private static class MissingDeliveryException extends RuntimeException {
+        private MissingDeliveryException(String message) {
+            super(message);
+        }
     }
 }

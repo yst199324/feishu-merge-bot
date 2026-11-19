@@ -223,9 +223,10 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         String step = "校验点击";
         try {
             // 幂等层：飞书回调超时会重推，同一张卡片的同一个动作只执行一次。
-            // 命中时不能一律回"已处理"——前面那次也可能失败过，
-            // 所以按当前真实状态给结论：确实已合并才算成功。
-            if (!idempotent.firstTime(idemKey)) {
+            // 用按钮专用有效期（60 秒）：飞书重推都在秒级，窗口太长会让
+            // "确认合并结果"失败后想重试的人被自己半小时前的记录挡住。
+            // 过期也不会重复合并——后面还有锁和"落笔前重查状态"两层兜底。
+            if (!idempotent.firstTime(idemKey, IdempotentStore.CLICK_TTL_MILLIS)) {
                 return alreadyHandled(resp, audit, repoId, localId, true);
             }
 
@@ -349,7 +350,9 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
         String idemKey = dupKey(messageId, repoId, localId, act);
         String step = "校验点击";
         try {
-            if (!idempotent.firstTime(idemKey)) {
+            // 和 doMerge 同一套规则：只挡飞书几秒内的回调重推，60 秒后允许重新判断，
+            // 到时按云效真实状态给结论（已关闭就是已关闭），不会重复关一次
+            if (!idempotent.firstTime(idemKey, IdempotentStore.CLICK_TTL_MILLIS)) {
                 return alreadyHandled(resp, audit, repoId, localId, false);
             }
             step = "查详情";

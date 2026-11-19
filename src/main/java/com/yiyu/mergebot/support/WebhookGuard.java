@@ -52,6 +52,30 @@ public class WebhookGuard {
         return token == null ? "" : token;
     }
 
+    /**
+     * 从请求头里取投递编号（云效给每一次 POST 生成的唯一 ID）。
+     *
+     * 它是**幂等去重的正解**：同一个编号 = 同一份报文，重推多少次都只处理一次。
+     * 之前用"仓库 + 合并请求编号 + 动作名"拼键，区分不了"同一个动作发生了两次"
+     * （比如关掉再重开、又关掉又重开），第二次重开的卡片就被当成重复丢掉了。
+     *
+     * 兼容 X-Gitlab-Event-UUID：云效的报文和请求头都刻意兼容 GitLab 的约定，
+     * 哪天主头改了名，这个兜底能让我们不至于整段时间一张卡都发不出去。
+     *
+     * @return 取不到返回空串，调用方必须当成致命错误处理——
+     *         空值拼进键里会让所有请求共用一个键，30 分钟内除第一条外全部被静默丢弃
+     */
+    public String deliveryOf(HttpHeaders headers) {
+        if (headers == null) {
+            return "";
+        }
+        String id = headers.getFirst("X-Codeup-Delivery");
+        if (!StringUtils.hasText(id)) {
+            id = headers.getFirst("X-Gitlab-Event-UUID");
+        }
+        return id == null ? "" : id;
+    }
+
     /** @return true 表示来源可信 */
     public boolean pass(String token) {
         String expect = props.getWebhookToken();

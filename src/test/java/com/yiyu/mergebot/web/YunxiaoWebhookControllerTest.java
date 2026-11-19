@@ -1,0 +1,172 @@
+package com.yiyu.mergebot.web;
+
+import com.yiyu.mergebot.config.FeishuProperties;
+import com.yiyu.mergebot.config.YunxiaoProperties;
+import com.yiyu.mergebot.feishu.CardFactory;
+import com.yiyu.mergebot.feishu.FeishuMessageService;
+import com.yiyu.mergebot.support.IdempotentStore;
+import com.yiyu.mergebot.support.WebhookDebugStore;
+import com.yiyu.mergebot.support.WebhookGuard;
+import com.yiyu.mergebot.yunxiao.MrView;
+import com.yiyu.mergebot.yunxiao.YunxiaoClient;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.Collections;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Webhook 去重测试。
+ *
+ * 这个类守的是一个真实出过的事故：同一个合并请求"关闭 → 重开 → 关闭 → 重开"，
+ * 前两次卡片都收到了，第三次重开时卡片消失。原因是去重键只拼了"动作名"，
+ * 两次 reopen 的键一模一样，第二次被当成重复投递静默丢掉。
+ *
+ * 现在键换成云效给的投递编号，测的就是：
+ *  - 同一份报文重推 → 只发一张
+ *  - 同一动作发生两次（两份不同报文）→ 发两张
+ *  - 没带投递编号 → 直接报错，不能拼成空串把后续事件全吞掉
+ */
+class YunxiaoWebhookControllerTest {
+
+    private static final String TOKEN = "mrb-test";
+    private static final String DELIVERY = "83fd7702-a9d1-46ca-9c05-058bcb084b89";
+
+    private FeishuMessageService messageService;
+    private YunxiaoWebhookController controller;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        FeishuProperties feishuProps = new FeishuProperties();
+        feishuProps.setChatId("oc_test");
+
+        YunxiaoProperties yunxiaoProps = new YunxiaoProperties();
+        yunxiaoProps.setWebhookToken(TOKEN);
+
+        YunxiaoClient client = mock(YunxiaoClient.class);
+        when(client.getRepositoryName(anyString())).thenReturn("");
+        when(client.getChangeRequest(anyString(), anyString())).thenReturn(MrView.of(null));
+        when(client.commitsFor(anyString(), anyString(), anyString())).thenReturn(Collections.emptyList());
+        when(client.webUrlFor(anyString(), anyString(), any(MrView.class))).thenReturn("");
+
+        CardFactory cardFactory = mock(CardFactory.class);
+        when(cardFactory.approvalCard(anyString(), anyString(), anyString(), any(MrView.class),
+                any(), anyString(), anyBoolean())).thenReturn("{}");
+
+        messageService = mock(FeishuMessageService.class);
+        when(messageService.sendCard(anyString(), anyString())).thenReturn("om_test");
+
+        controller = new YunxiaoWebhookController(feishuProps, client, cardFactory, messageService,
+                new WebhookGuard(yunxiaoProps), new IdempotentStore(), new WebhookDebugStore());
+        // 配置文件里的默认值就是 true，测试环境不走 Spring 容器，手动置上
+        ReflectionTestUtils.setField(controller, "usePayloadCommit", true);
+    }
+
+    @Test
+    @DisplayName("同一份报文被重推：只发一张卡")
+    void sameDeliveryOnlyOnce() {
+        controller.onEvent(payload("open"), headers(DELIVERY));
+        controller.onEvent(payload("open"), headers(DELIVERY));
+
+        verify(messageService, times(1)).sendCard(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("同一动作发生两次（两次重开）：要发两张卡，这就是之前漏掉的那一张")
+    void sameActionTwicePushesTwice() {
+        controller.onEvent(payload("reopen"), headers("delivery-1"));
+        controller.onEvent(payload("reopen"), headers("delivery-2"));
+
+        verify(messageService, times(2)).sendCard(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("没带投递编号：直接报错，不能拼成空串把后面所有事件静默吞掉")
+    void missingDeliveryRejected() {
+        ResponseEntity<String> resp = controller.onEvent(payload("open"), headers(null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+        verify(messageService, times(0)).sendCard(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("关闭事件不发卡，也不占用投递编号")
+    void closeIgnoredAndDoesNotOccupyDelivery() {
+        controller.onEvent(payload("close"), headers(DELIVERY));
+        verify(messageService, times(0)).sendCard(anyString(), anyString());
+
+        // 同一条投递编号如果被 close 登记过，这里就发不出去了
+        controller.onEvent(payload("open"), headers(DELIVERY));
+        verify(messageService, times(1)).sendCard(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("发卡失败要撤销登记，否则云效后台点「重新投递」也会被当成重复挡掉")
+    void sendFailureAllowsRedelivery() {
+        when(messageService.sendCard(anyString(), anyString()))
+                .thenThrow(new RuntimeException("飞书接口超时"))
+                .thenReturn("om_ok");
+
+        controller.onEvent(payload("open"), headers(DELIVERY));
+        controller.onEvent(payload("open"), headers(DELIVERY));
+
+        verify(messageService, times(2)).sendCard(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("云效「测试」按钮发的推送事件没带头也照常忽略，不升级成 400")
+    void pushEventIgnoredWithoutDelivery() {
+        ResponseEntity<String> resp = controller.onEvent(
+                "{\"object_kind\":\"push\",\"ref\":\"refs/heads/master\"}", headers(null));
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        verify(messageService, times(0)).sendCard(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("关闭事件没带头也只是忽略——本来就不发卡，没必要报错")
+    void closeIgnoredWithoutDelivery() {
+        ResponseEntity<String> resp = controller.onEvent(payload("close"), headers(null));
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        verify(messageService, times(0)).sendCard(anyString(), anyString());
+    }
+
+    /** 只保留判断要用到的字段，跟真实报文结构一致（新版：local_id + target_project_id） */
+    private String payload(String action) {
+        return "{"
+                + "\"object_kind\":\"merge_request\","
+                + "\"object_attributes\":{"
+                + "\"action\":\"" + action + "\","
+                + "\"local_id\":52,"
+                + "\"target_project_id\":5425059,"
+                + "\"last_commit\":{\"id\":\"a000a78ae678de0f8337c2bd66e13b46818b01e4\","
+                + "\"message\":\"机构查询我的课程，过滤家教课程\",\"author\":{\"name\":\"zlx\"}},"
+                + "\"url\":\"https://codeup.aliyun.com/607f9fbe/1998java/store-web-new/change/52\""
+                + "},"
+                + "\"repository\":{\"name\":\"store-web-new\"}"
+                + "}";
+    }
+
+    private HttpHeaders headers(String delivery) {
+        HttpHeaders h = new HttpHeaders();
+        h.add("X-Codeup-Token", TOKEN);
+        if (delivery != null) {
+            h.add("X-Codeup-Delivery", delivery);
+        }
+        return h;
+    }
+}
