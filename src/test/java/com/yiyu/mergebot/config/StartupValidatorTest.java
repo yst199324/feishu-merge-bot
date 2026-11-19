@@ -21,7 +21,7 @@ class StartupValidatorTest {
         YunxiaoProperties y = new YunxiaoProperties();
         y.setToken(token);
         y.setWebhookToken(webhookToken);
-        y.setOrgId("607f9fbe429bb594fdddc638");
+        y.setOrgId("1234567890abcdef12345678");
 
         FeishuProperties f = new FeishuProperties();
         f.setAppId(appId);
@@ -48,8 +48,8 @@ class StartupValidatorTest {
     @Test
     @DisplayName("模板里的 xxxx 形式占位值同样被拦住")
     void xxxxPlaceholderBlocksStartup() {
-        StartupValidator v = validator("cli_aa70056631b81bb4", "abc123secret",
-                "oc_c8dbba44830492d93d856ed7a4705ddc", "pt-xxxxxxxxxxxxxxxx", "mrb-test", false);
+        StartupValidator v = validator("cli_a1b2c3d4e5f6g7h8", "abc123secret",
+                "oc_1111111111111111111111111111", "pt-xxxxxxxxxxxxxxxx", "mrb-test", false);
         IllegalStateException e = assertThrows(IllegalStateException.class, v::afterPropertiesSet);
         assertTrue(e.getMessage().contains("yunxiao.token"), e.getMessage());
     }
@@ -57,8 +57,8 @@ class StartupValidatorTest {
     @Test
     @DisplayName("只漏了 app-secret 也要拦住")
     void missingSecretBlocksStartup() {
-        StartupValidator v = validator("cli_aa70056631b81bb4", "你的 App Secret",
-                "oc_c8dbba44830492d93d856ed7a4705ddc", "pt-abc123", "mrb-test", false);
+        StartupValidator v = validator("cli_a1b2c3d4e5f6g7h8", "你的 App Secret",
+                "oc_1111111111111111111111111111", "pt-abc123", "mrb-test", false);
         IllegalStateException e = assertThrows(IllegalStateException.class, v::afterPropertiesSet);
         assertTrue(e.getMessage().contains("feishu.app-secret"), e.getMessage());
     }
@@ -66,16 +66,16 @@ class StartupValidatorTest {
     @Test
     @DisplayName("配置齐全时通过校验")
     void completeConfigPasses() {
-        StartupValidator v = validator("cli_aa70056631b81bb4", "abc123secret",
-                "oc_c8dbba44830492d93d856ed7a4705ddc", "pt-abc123", "mrb-test", false);
+        StartupValidator v = validator("cli_a1b2c3d4e5f6g7h8", "abc123secret",
+                "oc_1111111111111111111111111111", "pt-abc123", "mrb-test", false);
         assertDoesNotThrow(v::afterPropertiesSet);
     }
 
     @Test
     @DisplayName("既没开轮询又没填 webhook-token 时不启动")
     void noTriggerBlocksStartup() {
-        StartupValidator v = validator("cli_aa70056631b81bb4", "abc123secret",
-                "oc_c8dbba44830492d93d856ed7a4705ddc", "pt-abc123", "", false);
+        StartupValidator v = validator("cli_a1b2c3d4e5f6g7h8", "abc123secret",
+                "oc_1111111111111111111111111111", "pt-abc123", "", false);
         IllegalStateException e = assertThrows(IllegalStateException.class, v::afterPropertiesSet);
         assertTrue(e.getMessage().contains("没有任何触发方式"), e.getMessage());
     }

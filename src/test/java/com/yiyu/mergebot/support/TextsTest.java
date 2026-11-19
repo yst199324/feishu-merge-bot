@@ -43,17 +43,17 @@ class TextsTest {
     @Test
     @DisplayName("真实凭据的形态都不算占位")
     void realValuesAreNotPlaceholder() {
-        assertFalse(Texts.isPlaceholder("cli_aa70056631b81bb4"));
-        assertFalse(Texts.isPlaceholder("oc_c8dbba44830492d93d856ed7a4705ddc"));
-        assertFalse(Texts.isPlaceholder("607f9fbe429bb594fdddc638"));
-        assertFalse(Texts.isPlaceholder("mrb-2026-store-web-new"));
+        assertFalse(Texts.isPlaceholder("cli_a1b2c3d4e5f6g7h8"));
+        assertFalse(Texts.isPlaceholder("oc_1111111111111111111111111111"));
+        assertFalse(Texts.isPlaceholder("1234567890abcdef12345678"));
+        assertFalse(Texts.isPlaceholder("mrb-test-token-abc"));
         assertFalse(Texts.isPlaceholder("pt-abc123def456"));
     }
 
     @Test
     @DisplayName("tail 取末位，空值给占位符")
     void tailStillWorks() {
-        assertTrue("b81bb4".equals(Texts.tail("cli_aa70056631b81bb4", 6)));
+        assertTrue("f6g7h8".equals(Texts.tail("cli_a1b2c3d4e5f6g7h8", 6)));
         assertTrue(Texts.UNKNOWN_TAIL.equals(Texts.tail(null, 6)));
         assertTrue(Texts.UNKNOWN_TAIL.equals(Texts.tail("  ", 6)));
         assertTrue("ab".equals(Texts.tail("ab", 6)));

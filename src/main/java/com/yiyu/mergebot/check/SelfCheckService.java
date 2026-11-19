@@ -225,7 +225,7 @@ public class SelfCheckService {
         } else {
             items.add(warn("云效组织 ID", "没填，接口会走 Region 版路径",
                     "如果你用的是 codeup.aliyun.com 的组织，必须填。从云效地址栏第一段拿，"
-                            + "形如 607f9fbe429bb594fdddc638"));
+                            + "形如 1234567890abcdef12345678 这样一串十六进制"));
         }
 
         return items;

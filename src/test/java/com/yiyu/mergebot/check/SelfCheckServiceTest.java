@@ -71,7 +71,7 @@ class SelfCheckServiceTest {
 
         yunxiaoProps = new YunxiaoProperties();
         yunxiaoProps.setToken(TOKEN);
-        yunxiaoProps.setOrgId("607f9fbe429bb594fdddc638");
+        yunxiaoProps.setOrgId("1234567890abcdef12345678");
         yunxiaoProps.setWebhookToken("mrb-test");
 
         feishuProps = new FeishuProperties();
