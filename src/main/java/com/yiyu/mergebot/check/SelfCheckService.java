@@ -264,7 +264,10 @@ public class SelfCheckService {
             try {
                 int n = yunxiao.listOpenChangeRequests(repoId).size();
                 items.add(pass("能读合并请求", "仓库 " + repoId + " 当前有 " + n + " 个待合并请求"));
-            } catch (YunxiaoException e) {
+            } catch (Exception e) {
+                // 这里吞掉所有异常，不只 YunxiaoException：漏出去一个空指针，
+                // 整组会被 safeGroup 换成一条"这组出错了"，后面的仓库校验和写权限
+                // 两项就直接从报告里消失，人被指向一个不存在的 bug
                 items.add(repoFailure("能读合并请求", repoId, e.getMessage()));
             }
         }
@@ -624,25 +627,46 @@ public class SelfCheckService {
 
     private Result configSourceResult() {
         File location = codeLocation();
-        // 部署时 location 是 .../merge-bot.jar，父目录就是 start.sh 里的 APP_HOME；
-        // IDE 里是 target/classes，没有外部配置这一说
-        File home = location.isFile() ? location.getParentFile() : location;
+        // 部署时 location 就是 .../merge-bot.jar，父目录 = start.sh 里的 APP_HOME；
+        // IDE 里是 target/classes，那里也有一份 application.yml，但那是构建产物，
+        // 两种情况的说法必须分开，否则 IDE 里会被告知"start.sh 加载的就是这份"
+        boolean deployed = location.isFile();
+        File home = deployed ? location.getParentFile() : location;
         File beside = new File(home, "application.yml");
 
-        if (beside.isFile()) {
-            return pass("配置文件来源", "用的是 " + beside.getAbsolutePath()
-                    + "（和 jar 同级，start.sh 加载的就是这份）");
-        }
-        if (location.isFile()) {
+        if (deployed) {
+            if (beside.isFile()) {
+                return pass("配置文件来源", "用的是 " + beside.getAbsolutePath()
+                        + "（和 jar 同级，start.sh 加载的就是这份）");
+            }
             return fail("配置文件来源", home.getAbsolutePath() + " 下没有 application.yml，"
                             + "现在用的是打包进 jar 的那份，改外面的配置不会生效",
                     "把 application.yml 放到 " + home.getAbsolutePath() + "，和 jar 同级，再重启");
         }
+        if (beside.isFile()) {
+            return pass("配置文件来源", "IDE 里跑，用的是 " + beside.getAbsolutePath()
+                    + "（打包部署后要改的是 jar 同级那份）");
+        }
         return pass("配置文件来源", "IDE 里跑，用的是 src/main/resources/application.yml");
     }
 
-    /** 本类是从哪加载的：部署时是 jar 文件，IDE 里是 target/classes 目录 */
+    /**
+     * 本类是从哪加载的：部署时是 jar 文件，IDE 里是 target/classes 目录。
+     *
+     * **优先看 java.class.path**。start.sh 用的是 `java -jar merge-bot.jar`，这时这个属性
+     * 就是 jar 的完整路径，不受执行目录影响。
+     *
+     * 不能直接拿 CodeSource 转 File：Spring Boot 可执行 jar 里的类装在
+     * `jar!/BOOT-INF/classes!/` 这个嵌套位置上，CodeSource 拿到的是 jar: 协议地址，
+     * `new File(URI)` 会抛 `IllegalArgumentException: URI is not hierarchical`
+     * （实测过），异常被下面接住后静默退回 user.dir —— 又回到"结论随执行目录漂移"，
+     * 等于这次修复没生效，而且日志里看不出来。
+     */
     private File codeLocation() {
+        File fromClasspath = jarFromClasspath(System.getProperty("java.class.path", ""));
+        if (fromClasspath != null) {
+            return fromClasspath;
+        }
         try {
             return new File(SelfCheckService.class.getProtectionDomain()
                     .getCodeSource().getLocation().toURI());
@@ -650,6 +674,27 @@ public class SelfCheckService {
             log.debug("取自身加载位置失败，退回当前工作目录", e);
             return new File(System.getProperty("user.dir", "."));
         }
+    }
+
+    /**
+     * 从 classpath 里认出"我们自己这个 jar"。
+     *
+     * 只有 classpath 恰好只有一项、且那一项是 jar 时才认 —— `java -jar x.jar` 就是这个形态。
+     * IDE 或 `java -cp a:b:c` 启动时，classpath 里混着一堆依赖 jar，随便挑一个会把
+     * 依赖所在的目录当成部署目录，结论错得更离谱。认不准就返回 null，让调用方走 CodeSource。
+     */
+    static File jarFromClasspath(String classpath) {
+        if (!StringUtils.hasText(classpath)) {
+            return null;
+        }
+        String[] entries = classpath.split(File.pathSeparator);
+        if (entries.length != 1 || !entries[0].endsWith(".jar")) {
+            return null;
+        }
+        File jar = new File(entries[0]);
+        // 转绝对路径：启动脚本用的是绝对路径，但手敲 `java -jar merge-bot.jar` 时
+        // classpath 里就是相对名，不转的话后面取父目录会取到 null
+        return jar.isFile() ? jar.getAbsoluteFile() : null;
     }
 
     private Result checkLastWebhook() {

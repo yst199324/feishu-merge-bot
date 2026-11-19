@@ -21,6 +21,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.io.File;
 import java.util.Collections;
 import java.util.Map;
 
@@ -28,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -288,6 +290,34 @@ class SelfCheckServiceTest {
         // 否则飞书收紧 1.0 时会出现"业务卡正常、自检卡发不出去"
         assertTrue(json.contains("\"body\""), json);
         assertTrue(json.contains("自检"), json);
+    }
+
+    @Test
+    @DisplayName("java -jar 启动时按 classpath 认出自己的 jar，不靠执行目录")
+    void jarFromClasspathWhenLaunchedByJar() throws Exception {
+        // start.sh 是 java -jar merge-bot.jar，此时 classpath 恰好只有这一项
+        File jar = File.createTempFile("merge-bot", ".jar");
+        jar.deleteOnExit();
+
+        assertEquals(jar.getAbsoluteFile(),
+                SelfCheckService.jarFromClasspath(jar.getAbsolutePath()));
+    }
+
+    @Test
+    @DisplayName("IDE / java -cp 启动时 classpath 里混着依赖，不能瞎认一个 jar")
+    void jarFromClasspathIgnoresMixedClasspath() throws Exception {
+        File jar = File.createTempFile("merge-bot", ".jar");
+        jar.deleteOnExit();
+        String sep = File.pathSeparator;
+
+        // 依赖 jar + 自己的 jar：认错就会把依赖所在目录当成部署目录
+        assertNull(SelfCheckService.jarFromClasspath(jar.getAbsolutePath() + sep + "/tmp/dep.jar"));
+        // 纯 class 目录（IDE 常态）
+        assertNull(SelfCheckService.jarFromClasspath(
+                "/work/target/classes" + sep + jar.getAbsolutePath()));
+        // 空的
+        assertNull(SelfCheckService.jarFromClasspath(""));
+        assertNull(SelfCheckService.jarFromClasspath(null));
     }
 
     // ---------------------------------------------------------------- 工具
