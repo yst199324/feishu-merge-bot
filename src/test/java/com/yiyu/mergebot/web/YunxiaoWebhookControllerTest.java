@@ -127,21 +127,33 @@ class YunxiaoWebhookControllerTest {
     }
 
     @Test
-    @DisplayName("云效「测试」按钮发的推送事件没带头也照常忽略，不升级成 400")
-    void pushEventIgnoredWithoutDelivery() {
+    @DisplayName("推送事件（云效「测试」按钮）没带投递编号：一样报错，不能按事件类型开天窗")
+    void pushEventWithoutDeliveryRejected() {
         ResponseEntity<String> resp = controller.onEvent(
                 "{\"object_kind\":\"push\",\"ref\":\"refs/heads/master\"}", headers(null));
+
+        // 缺头说明代理把请求头吃了，这是链路故障。按"这个事件本来也不发卡"放行 200，
+        // 等于让故障在配置验证阶段看起来一切正常，等真实合并请求来了才暴露。
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+        verify(messageService, times(0)).sendCard(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("推送事件带投递编号：正常忽略，返回 200（入口校验不能误伤正常链路）")
+    void pushEventWithDeliveryIgnored() {
+        ResponseEntity<String> resp = controller.onEvent(
+                "{\"object_kind\":\"push\",\"ref\":\"refs/heads/master\"}", headers(DELIVERY));
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         verify(messageService, times(0)).sendCard(anyString(), anyString());
     }
 
     @Test
-    @DisplayName("关闭事件没带头也只是忽略——本来就不发卡，没必要报错")
-    void closeIgnoredWithoutDelivery() {
+    @DisplayName("关闭事件没带投递编号：同样报错——缺头是链路问题，与事件类型无关")
+    void closeWithoutDeliveryRejected() {
         ResponseEntity<String> resp = controller.onEvent(payload("close"), headers(null));
 
-        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
         verify(messageService, times(0)).sendCard(anyString(), anyString());
     }
 

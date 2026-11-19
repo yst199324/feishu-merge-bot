@@ -135,17 +135,27 @@ public class YunxiaoWebhookController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body("forbidden");
         }
 
-        // 云效要求快速响应，慢了自己会重推；业务异常吞掉，不让它等。
+        // 投递编号是去重的唯一依据，任何事件缺了都必须拦在门口，不分事件类型。
         //
-        // 只有一种例外：该发卡的合并请求事件却没带投递编号——那是真错误，
-        // 必须回 400 让云效看见，不能混在 200 里静默过去（静默就等于永久丢卡片）。
-        String note;
-        try {
-            note = dispatch(raw, guard.deliveryOf(headers));
-        } catch (MissingDeliveryException e) {
-            log.error(e.getMessage());
+        // ⚠️ 绝不能"取不到就当空串拼进键里"：那样所有请求共用一个键，
+        // 30 分钟内第一条之后全部被判成重复、静默丢弃——比漏一张卡严重得多。
+        //
+        // ⚠️ 也不能只对"要发卡的事件"校验。缺头几乎不是云效没发，而是中间的反向代理/网关
+        // 把未声明的请求头滤掉了（Nginx 的 proxy_set_header 白名单、WAF 都会这么干）。
+        // 这种配置故障第一个被踩到的往往是配置完点「测试」按钮——推送事件被正常忽略、
+        // 返回 200，看起来链路完全正常；等真实合并请求来了才 400，检测点刚好错过最该报错的时刻。
+        String deliveryId = guard.deliveryOf(headers);
+        if (!StringUtils.hasText(deliveryId)) {
+            log.error("webhook 报文没带 X-Codeup-Delivery 头，无法去重，本次丢弃。"
+                    + "检查 Nginx/网关是否配了 proxy_set_header 白名单，把未知请求头滤掉了");
             debugStore.record(token, true, "缺少 X-Codeup-Delivery 头，已丢弃", raw);
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("missing X-Codeup-Delivery");
+        }
+
+        // 云效要求快速响应，慢了自己会重推；业务异常吞掉，不让它等
+        String note;
+        try {
+            note = dispatch(raw, deliveryId);
         } catch (Exception e) {
             log.error("处理云效事件失败", e);
             note = "处理异常：" + e.getMessage();
@@ -158,8 +168,7 @@ public class YunxiaoWebhookController {
      * 判断这份报文要不要处理，要处理的才去重、发卡。
      *
      * @param raw        报文原文，只用于打日志和错误提示
-     * @param deliveryId 云效投递编号，缺失时抛 {@link MissingDeliveryException}；
-     *                   可以为空——非合并请求事件不需要它
+     * @param deliveryId 云效投递编号，去重键的唯一组成。调用方已在入口保证非空
      * @return 处理结果说明，写进 /test/last-webhook，方便对着看是哪一步没走通
      */
     private String dispatch(String raw, String deliveryId) throws Exception {
@@ -176,17 +185,6 @@ public class YunxiaoWebhookController {
         if (!NOTIFY_ACTIONS.contains(action)) {
             log.info("忽略合并请求动作: action={}（只处理 open/reopen）", action);
             return "忽略：action=" + action + "（只处理 open/reopen，update 不重复提醒）";
-        }
-
-        // 走到这里才是真要去重、要发卡的事件，投递编号必须有。
-        //
-        // 校验放在这个位置而不是入口处，是为了不让云效「测试」按钮（推送事件）
-        // 也被判成 400——那类事件本来就该忽略，为它报错只会把日志刷满，
-        // 真出问题时反而看不出是哪一条有毛病。
-        if (!StringUtils.hasText(deliveryId)) {
-            throw new MissingDeliveryException(
-                    "合并请求事件没带 X-Codeup-Delivery 头，无法去重，本次丢弃。"
-                            + "检查 Nginx/网关是否配了 proxy_set_header 白名单，把未知请求头滤掉了");
         }
 
         String repoId = repoIdOf(root, attrs);
@@ -421,18 +419,5 @@ public class YunxiaoWebhookController {
             return "******（长度 " + value.length() + "）";
         }
         return value.substring(0, 4) + "******（长度 " + value.length() + "）";
-    }
-
-    /**
-     * 该去重的事件却没带投递编号。
-     *
-     * 单独定义一种异常，是为了让入口能把它和"业务处理失败"分开走：
-     * 这个要回 400 让云效看见（否则卡片永远发不出来而且没人知道），
-     * 其他异常按既有约定吞掉回 200，不让云效因为我们的问题反复重推。
-     */
-    private static class MissingDeliveryException extends RuntimeException {
-        private MissingDeliveryException(String message) {
-            super(message);
-        }
     }
 }
