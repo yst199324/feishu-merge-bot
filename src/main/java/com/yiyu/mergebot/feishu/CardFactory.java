@@ -101,10 +101,13 @@ public class CardFactory {
 
         // 云效按钮 + 底部一行灰字链接。
         //
-        // 为什么不把 URL 单列一行放在正文：太占地方，而且大部分时候没人复制。
-        // 但也不能完全去掉——手机上点按钮只能在本机浏览器打开，
-        // 想"发到电脑上接着看"就得能复制，而按钮上的文字复制不了，只有正文文字可以长按复制。
-        // 折中放在最底部灰字里：不干扰阅读，需要时还能长按。
+        // 为什么不把 URL 单列一行放在正文：太占地方，而且大部分时候没人看。
+        // 但也不能完全去掉——按钮上的文字拿不到，留一行原文至少能看清这条请求在哪个仓库。
+        //
+        // 注意：**手机端长按卡片不会选中文字**，弹出的是消息菜单（转发/复制消息链接/置顶），
+        // 「复制消息链接」拿到的是 applink.feishu.cn 的飞书消息链接，不是这里这串云效地址。
+        // 所以灰字不能写"长按可复制"——复制只能点开浏览器后从地址栏复制。
+        // 早期版本就是写错了这句提示，用户照着长按，复制出来的是一条飞书链接。
         if (!url.isEmpty()) {
             elements.add(linkButton("在云效打开", "default", url));
         }
@@ -114,7 +117,7 @@ public class CardFactory {
                 + behindHint(mr) + "</font>"));
 
         if (!url.isEmpty()) {
-            elements.add(markdown("<font color='grey'>云效链接（长按可复制）：" + esc(url) + "</font>"));
+            elements.add(markdown("<font color='grey'>云效链接（点一下在浏览器打开）：" + esc(url) + "</font>"));
         }
 
         // 头部跟着状态走：已关闭灰、已合并绿、待审批蓝。
@@ -272,7 +275,8 @@ public class CardFactory {
      *  2. **已合并绿、已拒绝灰、失败红**。拒绝是正常决策不是异常，不能用黄/红；
      *  3. **正文第一行是结果**（加粗+着色），紧跟着是完整标题——
      *     header 里的标题会被截断到 24 字，正文这条给全的；
-     *  4. **URL 只出现在底部灰字里**，不占正文版面，需要时还能长按复制。
+     *  4. **URL 只出现在底部灰字里**，不占正文版面；点一下在浏览器打开
+     *     （手机端长按卡片是消息菜单，复制不到这串地址，所以不写"长按可复制"）。
      *
      * @param kind   这次是什么结果，决定头部文字和颜色
      * @param message 结果说明，如「已合并进 test」
@@ -314,7 +318,7 @@ public class CardFactory {
         String url = blank(detailUrl, mr == null ? "" : blank(mr.getDetailUrl(), ""));
         if (!url.isEmpty()) {
             elements.add(linkButton("去云效查看", "default", url));
-            elements.add(markdown("<font color='grey'>云效链接（长按可复制）：" + esc(url) + "</font>"));
+            elements.add(markdown("<font color='grey'>云效链接（点一下在浏览器打开）：" + esc(url) + "</font>"));
         }
 
         return toJson(card(kind.getColor(), headOf(kind.getLabel(), taskTitle, repoName), elements));

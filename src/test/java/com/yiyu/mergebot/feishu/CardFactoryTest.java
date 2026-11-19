@@ -51,7 +51,8 @@ class CardFactoryTest {
         assertTrue(json.contains("分支：<font color='blue'>**dev订单**</font> → <font color='green'>**test**</font>"),
                 "源分支蓝、目标分支绿，都加粗");
         assertTrue(json.contains("去云效查看"), "跳转按钮不能丢");
-        assertTrue(json.contains("云效链接（长按可复制）"), "URL 放底部灰字");
+        assertTrue(json.contains("云效链接（点一下在浏览器打开）"), "URL 放底部灰字");
+        assertFalse(json.contains("长按"), "手机长按卡片弹出的是消息菜单，复制不到地址，不能再这么写");
     }
 
     @Test
@@ -97,7 +98,7 @@ class CardFactoryTest {
         assertTrue(json.contains("分支：<font color='blue'>**dev订单**</font> → <font color='green'>**test**</font>"));
         assertFalse(json.contains("合并到 "), "按钮只写「合并」");
         assertFalse(json.contains("合并请求：https"), "正文那行明文 URL 已经去掉");
-        assertTrue(json.contains("云效链接（长按可复制）：https://codeup.aliyun.com/x"), "底部灰字保留可复制链接");
+        assertTrue(json.contains("云效链接（点一下在浏览器打开）：https://codeup.aliyun.com/x"), "底部灰字保留链接原文");
         assertTrue(json.contains("23a64ce8"), "按钮值里带上最近提交，供结果卡透传");
         assertTrue(json.contains("\"url\":\"https://codeup.aliyun.com/x\""),
                 "Webhook 给的链接要塞进按钮值，结果卡的「去云效查看」直接用它");
@@ -117,7 +118,7 @@ class CardFactoryTest {
         assertTrue(json.contains("拒绝"), "拒绝按钮还在");
         assertTrue(json.contains("机器人自动检查"));
         assertTrue(json.contains("在云效打开"), "跳转按钮还在");
-        assertTrue(json.contains("云效链接（长按可复制）"));
+        assertTrue(json.contains("云效链接（点一下在浏览器打开）"));
         assertTrue(json.contains("\"url\":\"https://codeup.aliyun.com/x\""), "按钮值继续透传链接");
         assertTrue(json.contains("23a64ce8"), "按钮值继续透传最近提交");
     }
