@@ -713,7 +713,7 @@ mergebot:
 | `yunxiao.token` | 必填 | 个人访问令牌，`pt_` 开头 |
 | `yunxiao.org-id` | 必填 | 组织 ID，留空会查不到数据 |
 | `yunxiao.webhook-token` | 必填（走 Webhook 时） | 校验请求来源，要和云效那边填的一致。留空则 `/webhook/yunxiao` 拒绝所有请求；若同时没开轮询，服务启动就直接退出 |
-| `yunxiao.web-base` | codeup.aliyun.com | 网页版地址，卡片上的链接用它拼 |
+| `yunxiao.web-base` | codeup.aliyun.com | 网页版地址。一般用不到：卡片链接优先用云效返回的 detailUrl，只有它缺失时才用它拼 |
 | `yunxiao.domain` | openapi-rdc.aliyuncs.com | 调接口用的地址，一般不用改 |
 | `yunxiao.merge-type` | no-fast-forward | 合并方式：`ff-only` / `no-fast-forward` / `squash` / `rebase` |
 | `yunxiao.remove-source-branch` | false | 合并后是否删源分支 |

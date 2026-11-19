@@ -96,11 +96,14 @@ yunxiao:
   # 云效服务接入点。中心版/Region 版都用这个域名
   domain: https://openapi-rdc.aliyuncs.com
 
-  # 云效网页版地址。**它和上面的 domain 不是一回事**：
-  #   domain  = 程序调接口用的（openapi-rdc.aliyuncs.com）
+  # 云效网页版地址（人用浏览器打开的）。**它和上面的 domain 不是一回事**：
+  #   domain   = 程序调接口用的（openapi-rdc.aliyuncs.com）
   #   web-base = 人用浏览器打开的（codeup.aliyun.com）
-  # 卡片上"合并请求：https://..."那一行和「在云效打开」按钮都用它拼。
-  # 只有云效详情接口没返回 detailUrl 时才会用到，一般不用改。
+  # 用途：卡片上「在云效打开」按钮和底部那行可复制链接。
+  # 链接优先用云效详情接口返回的 detailUrl（官方给的，最准），
+  # 只有 detailUrl 缺失时才拿它拼：
+  #   {web-base}/{组织ID}/{组名}/{仓库名}/change/{编号}
+  # 所以一般不用改。
   web-base: https://codeup.aliyun.com
 
   # 个人访问令牌（pt- 开头）。

@@ -41,7 +41,9 @@ yunxiao:
   # 云效组织 ID
   org-id: "你的组织ID"
 
-  # 云效网页版地址，卡片上"合并请求：https://..."那一行用它拼
+  # 云效网页版地址（人用浏览器打开的）。正常用不到：
+  # 卡片上的链接优先用云效详情接口返回的 detailUrl，
+  # 只有它没返回时才用这一项拼。一般不用改
   web-base: https://codeup.aliyun.com
 
   # 云效 Webhook 里填的 Secret Token，两边必须完全一致（必填）

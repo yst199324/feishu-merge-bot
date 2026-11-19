@@ -17,7 +17,11 @@ public class YunxiaoProperties {
     private String domain = "https://openapi-rdc.aliyuncs.com";
 
     /**
-     * 云效网页版地址，用来拼合并请求的可点击链接。
+     * 云效网页版地址（给人用浏览器打开的），用来**兜底**拼合并请求链接。
+     *
+     * 正常情况下用不到：卡片上的链接优先取详情接口返回的 detailUrl，
+     * 只有它缺失时才用这一项拼成
+     * {webBase}/{组织ID}/{组名}/{仓库名}/change/{编号}。
      *
      * 注意它和 domain **不是一回事**：domain 是给程序调接口用的
      * （openapi-rdc.aliyuncs.com），webBase 是给人用浏览器打开的
