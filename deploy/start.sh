@@ -18,6 +18,13 @@
 # 不管从哪个目录执行，都切到脚本所在的目录，避免相对路径的日志、配置找错位置
 APP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# 真的切过去（上面那行只是算出路径，没有改变当前目录）。
+# 必须切：jar 内 application.yml 里的 spring.config.import 写的是 ./.env，
+# 这个相对路径按**进程工作目录**解析。不切的话从别的目录调用本脚本，
+# .env 会找错地方；又因为写了 optional:，找不到是静默跳过 —— 不报错、不告警，
+# 直接用占位值，表现成"配置改了没生效"，最难查。
+cd "$APP_HOME" || exit 1
+
 APP_NAME="merge-bot"
 APP_JAR="$APP_HOME/${APP_NAME}.jar"
 LOG_DIR="$APP_HOME/logs"

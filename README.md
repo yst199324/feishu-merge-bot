@@ -368,6 +368,27 @@ cp .env.example .env
 
 `.env` 已被 `.gitignore` 排除，不会推到 GitHub。**部署到服务器不用 `.env`**，改 jar 同级那份 `application.yml`（见第九章）。
 
+#### `.env` 和真正的环境变量，用哪个？
+
+两个都能用，而且**不冲突**。这几项配置的来源是有优先级的，从高到低：
+
+| 顺序 | 来源 | 举例 |
+|---|---|---|
+| 1 | 启动参数 | `java -jar x.jar --feishu.app-id=cli_xxx` |
+| 2 | JVM 参数 | `-Dfeishu.app-id=cli_xxx` |
+| 3 | **操作系统环境变量** | `export FEISHU_APP_ID=cli_xxx` |
+| 4 | jar 外的 `application.yml` | 第九章服务器那份 |
+| 5 | `.env` | 本地这份 |
+| 6 | jar 内 `application.yml` 的默认值 | 仓库里这份，只有占位值 |
+
+排在上面的赢。所以你在服务器上 `export` 了某个值，它会盖掉 `.env` 里的，一行代码都不用改。
+
+一点区别值得知道：**`.env` 读进来的是 Spring 的配置项，不是真正的环境变量**。代码里 `System.getenv("FEISHU_APP_ID")` 拿不到它。本项目没有这种调用（全是 `@ConfigurationProperties` 读配置），所以两种方式效果完全一样。
+
+为什么不干脆统一用环境变量？因为 IDEA 里没法从文件自动注入环境变量——只能在 Run Configuration 里手敲（或装 `EnvFile` 插件），而 macOS 上从 Dock 启动的 IDEA 根本不继承终端的环境变量。`.env` 文件方案反而是一个文件三个平台通吃。
+
+**但别让同一个 `.env` 同时被 Spring 和 shell 读。** 两者语法不完全兼容，比如 `TOKEN=abc#123` 在 Spring 眼里是 `abc#123`，在 shell 里 `#` 后面算注释、只剩 `abc`。混用会出现「本地好好的、服务器读到半截」，极难查。要么全走 Spring（推荐），要么全走 shell `source`。
+
 几个值得知道的默认值（这些不敏感，留在 yml 里就行）：
 
 - `feishu.allow-group-members: true` —— **审批群里的人都能点按钮**，加人减人自动生效，不用维护名单（推荐就用这个）
@@ -387,7 +408,7 @@ mvn clean package
 
 产物固定叫 `target/merge-bot.jar`（`pom.xml` 里锁了名字，文档里的命令不用跟着版本号改）。
 
-**这一步会顺带跑完所有单元测试**，现在一共 56 个用例，全绿才算通过（数量会随迭代增加，看总数不为 0、失败为 0 就行）。只想跑测试、不打包：
+**这一步会顺带跑完所有单元测试**，现在一共 71 个用例，全绿才算通过（数量会随迭代增加，看总数不为 0、失败为 0 就行）。只想跑测试、不打包：
 
 ```bash
 mvn test
