@@ -1,0 +1,180 @@
+# ---------------------------------------------------------------
+# 这份文件进仓库，所以里面只放占位值。
+#
+# 真实值统一写在项目根目录的 .env 里（该文件不进仓库）。
+# 下面凡是 ${FEISHU_APP_ID:...} 这种写法：.env 里有这一项就用它的值，
+# 没有就回落到冒号后面的默认值。所以没有 .env 也能启动，
+# 只是必填项会用占位值，启动校验会提示"未填写"。
+#
+# 用法：把 .env.example 复制成 .env，填上真实值即可。
+#
+# 部署到服务器：把这份 application.yml 整份覆盖过去（它只含占位值，覆盖不会冲掉任何真实配置），
+# 真实值放 jar 同级目录的 .env，同样由下面的 spring.config.import 读进来。
+# .env 是本机专属的、不进仓库；要改配置就改 .env，别改服务器上这份 yml
+# —— 下次覆盖会把改动冲掉。
+# ---------------------------------------------------------------
+spring:
+  config:
+    # 把项目根目录的 .env 当普通配置文件读（内容就是 KEY=VALUE 一行一个）。
+    # 方括号里的 .properties 是告诉 Spring 按 properties 格式解析它，
+    # 不加的话会因为没有 .env 扩展名的解析器而报错。
+    # optional: 表示文件不存在时不报错，直接用下面的默认值
+    import: optional:file:./.env[.properties]
+
+server:
+  # 端口也能从 .env 覆盖（.env 里写 SERVER_PORT=18123）。
+  # 这样服务器那份 application.yml 和仓库里这份可以完全一致，
+  # 改完直接整份覆盖过去，不会把服务器的端口冲掉。
+  port: ${SERVER_PORT:8081}
+  # 配好 Nginx 反代、只暴露 /webhook/* 之后，把下面这行的注释去掉，
+  # 让 8081 只监听本机，别让它直接对公网（多一层保护）。
+  # address: 127.0.0.1
+
+logging:
+  # 业务日志级别。
+  # 生产用 INFO；排查"点了按钮为什么没反应"这类问题时，临时改成 DEBUG
+  # 能看到每道校验走了哪个分支（改 logback-spring.xml 里那一行也行，那边优先级更高）。
+  level:
+    com.yiyu.mergebot: INFO
+
+mergebot:
+  # 排错接口（/test/*，含 /test/doctor 一键自检）的开关。
+  # 本地默认开着（true）；服务器在 .env 里写 TEST_ENDPOINTS=false 关掉。
+  #
+  # 为什么这里是个占位符而不是写死 true：这个文件会被整份覆盖到服务器。
+  # 写死 true 的话，每次覆盖都会把公网上的调试接口重新打开 ——
+  # 那是一个谁都能调、能往群里发卡片的接口。写成 ${TEST_ENDPOINTS:true}
+  # 之后，开关状态由各机器自己的 .env 决定，覆盖 yml 不会动它。
+  # 配了 Nginx 反代的话，/test/* 本来就被挡在外面，但双保险更省心。
+  test-endpoints: ${TEST_ENDPOINTS:true}
+
+  # 是否把云效推过来的 webhook 报文**原文整段**打进日志（默认 true）。
+  # 开着的好处：字段名对不上、事件被忽略这类问题，看一眼原文就能定位，
+  # 不用再靠猜或让云效重推。报文一般 2~5 KB，一天几十条也不占地方。
+  # 注意：报文里有提交人的姓名和邮箱，如果日志要外发，改成 false 只留摘要。
+  log-webhook-raw: true
+
+  # 内部入口 /internal/yunxiao 的开关：给监听服务（feishu-merge-relay）转发用。
+  # **默认关闭，只部署合并项目时不要开。**
+  #
+  # 为什么必须能关：形态一（只部署合并项目）下，18123 是对公网开放的，
+  # 而这个接口不做来源校验（靠"端口不对公网开放"来保护）。
+  # 永远注册等于开了一个无鉴权的发卡入口，谁都能 POST 进来让机器人发卡片。
+  #
+  # 部署监听服务时，在 .env 里写 INTERNAL_ENDPOINT=true 并重启。
+  # 忘了打开的表现是监听服务一直转发失败（接口 404），日志看不出根因；
+  # 上线验收时可以临时打开 TEST_ENDPOINTS，用 /test/doctor 看「内部入口开关」那一项。
+  internal-endpoint-enabled: ${INTERNAL_ENDPOINT:false}
+
+  # ---------------------------------------------------------------- 轮询
+  # 作用：不用开公网端口，服务自己定时去云效问"有没有新的待合并请求"。
+  #
+  # 三种触发方式选一种即可：
+  #   A. 轮询（本节）       —— 不需要公网、不需要流水线，本机就能跑，延迟约 1 分钟
+  #   B. 云效代码库 Webhook —— 需要公网 HTTPS，毫秒级，报文最完整
+  #   C. 云效流水线调接口   —— 需要公网，且拿不到合并请求编号
+  #
+  # 推荐顺序：B（有公网就走它）。没有公网就开 A，功能完全一样，只是慢一分钟。
+  # 两者可以同时开，但同一个请求你会收到两条消息，别长期并行。
+  poll:
+    # 打开后，服务启动 15 秒会自动扫第一轮
+    enabled: false
+
+    # 轮询间隔（毫秒）。60 秒对周末场景完全够
+    interval-ms: 60000
+
+    # 要盯的仓库 ID 列表（不是仓库名）。
+    # 从哪拿：打开云效任意一个合并请求，URL 里 .../repositories/2813489/changeRequests/12
+    #         中间那串数字就是仓库 ID
+    repo-ids: []
+    #   - "2813489"
+
+    # 只关心合到这些分支的请求。留空 = 全部。
+    # 填 test 就只推合到 test 的，合到 prod 的完全不理
+    target-branches: []
+    #   - "test"
+
+    # 仓库 ID -> 显示名，卡片上好看一点；不配就直接显示 ID
+    repo-names: {}
+    #   "2813489": store-web-new
+
+feishu:
+  # 开发者后台 -> 凭证与基础信息
+  app-id: ${FEISHU_APP_ID:cli_你的应用ID}
+  app-secret: "${FEISHU_APP_SECRET:在这里粘贴 App Secret}"
+
+  # 接收审批卡片的群 chat_id（oc_ 开头）
+  # 拿法：群设置页拉到最底部，抄「会话 ID」；或把机器人拉进群后调 GET /test/chats
+  chat-id: "${FEISHU_CHAT_ID:oc_你的群会话ID}"
+
+  # 允许点按钮的人，每行一个，ou_ 开头。
+  #
+  # 一般不用填。下面开着 allow-group-members，审批群里的人都能点，加人减人自动生效。
+  # 这个白名单只在两种情况下用：
+  #   1. 有人不在审批群，但需要能操作（比如你休假时同事临时接管）
+  #   2. 想把权限收窄到固定几个人：把 allow-group-members 改成 false
+  #
+  # 三个必须知道的点：
+  #  1. open_id 是**按应用**算的。同一个人在别的飞书应用里的 open_id 跟这里不一样，
+  #     必须用本应用（也就是上面 feishu.app-id 填的那个应用）拿到的那个，
+  #     抄错了会一直提示没权限。
+  #  2. 不是 user_id（员工号），也不是 union_id。填错类型同样一直拒绝。
+  #  3. 改完这个文件必须重启服务才生效（这个文件不会热加载）。
+  allowed-open-ids: []
+  # 要填的话长这样（把 [] 换成下面几行，注意缩进）：
+  # allowed-open-ids:
+  #   - "ou_aaaaaaaaaaaaaaaaaaaaaaaaaa"
+  #   - "ou_bbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+  # 除了白名单，是否允许"审批群里的成员"也能点。默认开启。
+  # 开启后不用维护名单；关掉就必须把每个人写进上面的 allowed-open-ids。
+  # 依赖应用权限「查看群成员」或「获取群组信息」——没开的话所有人都点不动（失败时一律拒绝）。
+  allow-group-members: true
+
+  # 群成员判断结果的缓存秒数。只缓存"确认是成员"的结论，
+  # 所以刚被移出群的人，最迟这么久之后点不动；刚被拉进群的人立刻能点。
+  group-member-cache-seconds: 300
+
+yunxiao:
+  # 云效服务接入点。中心版/Region 版都用这个域名
+  domain: https://openapi-rdc.aliyuncs.com
+
+  # 云效网页版地址（人用浏览器打开的）。**它和上面的 domain 不是一回事**：
+  #   domain   = 程序调接口用的（openapi-rdc.aliyuncs.com）
+  #   web-base = 人用浏览器打开的（codeup.aliyun.com）
+  # 用途：卡片上「在云效打开」按钮和底部那行可复制链接。
+  # 链接优先用云效详情接口返回的 detailUrl（官方给的，最准），
+  # 只有 detailUrl 缺失时才拿它拼：
+  #   {web-base}/{组织ID}/{组名}/{仓库名}/change/{编号}
+  # 所以一般不用改。
+  web-base: https://codeup.aliyun.com
+
+  # 个人访问令牌（pt- 开头）。
+  # 强烈建议用单独的"合并机器人"账号生成，别用你自己的，
+  # 否则云效审计日志里所有合并记录都算你本人操作
+  token: "${YUNXIAO_TOKEN:pt-xxxxxxxxxxxxxxxx}"
+
+  # 组织 ID。留空会走 Region 版路径，中心版组织会查不到数据。
+  # 从云效「组织设置 -> 基本信息」里抄，或看网页地址里 orgId 那一段
+  org-id: "${YUNXIAO_ORG_ID:你的组织ID}"
+
+  # 合并方式：ff-only / no-fast-forward / squash / rebase
+  merge-type: no-fast-forward
+
+  # 合并后是否删除源分支
+  remove-source-branch: false
+
+  # 云效 Webhook 里填的 Secret Token，接收端用它校验来源。
+  # **留空服务不启动**（这是故意的：空值等于门没锁，任何人都能 POST 进来发卡片）。
+  # 填任意随机字符串，比如 mrb-store-web-2026-abc123，
+  # 然后去云效代码库 -> 设置 -> Webhooks 里填同一个值。
+  webhook-token: "${YUNXIAO_WEBHOOK_TOKEN:在这里填一个随机字符串}"
+
+  # 只有走「云效流水线 -> 调 /webhook/flow」这条路才需要配：
+  # 流水线的内置变量里没有仓库 ID，只给仓库名，这里把名字映射成 ID。
+  # 走代码库 Webhook（/webhook/yunxiao）的话不用配这一项。
+  #
+  # 仓库 ID 从哪来：云效 Webhook 的投递记录里能看到 project.id，
+  # 或者打开一个合并请求，URL 里的那串数字就是。
+  # repos:
+  #   store-web-new: "把仓库ID填这里"

@@ -633,7 +633,7 @@ curl 127.0.0.1:8081/test/last-webhook
 ```
 /你的目录/mergebot/
 ├── merge-bot.jar        # mvn package 的产物
-├── application.yml      # 直接用 src/main/resources/application.yml 覆盖过来
+├── application.yml      # 从仓库 deploy/application.yml 拷
 ├── .env                 # 本机专属的真实值，从 deploy/.env.example 复制
 ├── start.sh
 ├── stop.sh
@@ -647,16 +647,18 @@ curl 127.0.0.1:8081/test/last-webhook
 1. 本地改完 `application.yml`（加配置、改注释），**整份覆盖到服务器就行**，不会冲掉服务器上的凭据
 2. 服务器和本地只有 `.env` 不一样，那份永远不用动
 
-`deploy/application.yml`、`deploy/.env`、`deploy/*.jar` 都在 `.gitignore` 里，都是本机或服务器上的拷贝件。仓库里给模板的只有一份：`deploy/.env.example`。
+`deploy/application.yml` 和 `deploy/.env.example` 都**入库**，新克隆一份仓库就能直接部署。`deploy/.env`（真实凭据）和 `deploy/*.jar`（构建产物）在 `.gitignore` 里，不入库。
 
-`application.yml` **没有模板文件**，直接用 `src/main/resources/application.yml` 复制过去就行——它本来就只有结构、不含真实值。也**不要在服务器那份里写真实凭据**：外置 yml 的优先级高于 `.env`，一旦写成本地字面值，下次覆盖时又会把服务器上的值冲掉，回到"每次手改"的老问题。
+仓库里的 `application.yml` 有两份：`src/main/resources/` 那份打进 jar，`deploy/` 那份拷到服务器。两份必须逐字一致，改一处要一起改——忘了会有 `DeployConfigSyncTest` 直接报错，不用靠人记。
+
+也**不要在服务器那份里写真实凭据**：外置 yml 的优先级高于 `.env`，一旦写成本地字面值，下次覆盖时又会把服务器上的值冲掉，回到"每次手改"的老问题。
 
 ### 9.2 三步配好
 
 **① 放配置文件：不用改任何值**
 
 ```bash
-cp src/main/resources/application.yml /你的目录/mergebot/application.yml
+cp deploy/application.yml /你的目录/mergebot/application.yml
 ```
 
 **② 建 .env：填这台服务器自己的值**

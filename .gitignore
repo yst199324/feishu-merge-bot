@@ -10,8 +10,10 @@ cp.txt
 # 部署产物：jar 是构建生成的，不入库（本地 mvn package 或看 deploy 说明）
 deploy/*.jar
 
-# 服务器上的拷贝件，直接从 src/main/resources/application.yml 复制，不入库
-deploy/application.yml
+# 注意：deploy/application.yml 是入库的（新克隆下来就能直接部署）。
+# 它必须和 src/main/resources/application.yml 逐字一致，有这个拷贝是为了
+# "jar 同级必须有一份 application.yml"，start.sh 会检查。改一处记得改另一处，
+# 忘了会有测试 DeployConfigSyncTest 直接报错。
 
 # 服务器上的真实值（凭据 + 端口），不入库。模板见 deploy/.env.example
 deploy/.env
