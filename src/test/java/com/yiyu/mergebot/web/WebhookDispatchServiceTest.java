@@ -13,7 +13,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -167,6 +170,47 @@ class WebhookDispatchServiceTest {
         // 这种跳过会永远停在处理中，同一条投递每次重投都要占一次云效调用
         assertEquals(DispatchResult.Outcome.IGNORED,
                 service.dispatch(payload("open"), DELIVERY).getOutcome());
+    }
+
+    @Test
+    @DisplayName("8 个重投同时打进来：只有 1 个真正处理，其余全是 IN_FLIGHT/IGNORED，绝不发两张卡")
+    void concurrentRedeliveriesOnlyOneProcesses() throws Exception {
+        // 监听服务读超时 120 秒、最坏处理 85 秒，所以"重投撞上还在处理的第一次"是真实场景。
+        // 这条守的是：撞上时必须一直答 IN_FLIGHT（内部入口→503→不删文件），
+        // 而不是因为它"这次没做事"就答成已完成。
+        int threads = 8;
+        CountDownLatch start = new CountDownLatch(1);
+        List<DispatchResult> results = Collections.synchronizedList(new ArrayList<DispatchResult>());
+        Thread[] workers = new Thread[threads];
+        for (int i = 0; i < threads; i++) {
+            workers[i] = new Thread(() -> {
+                try {
+                    start.await();
+                    results.add(service.dispatch(payload("open"), DELIVERY));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            workers[i].start();
+        }
+        start.countDown();
+        for (Thread t : workers) {
+            t.join();
+        }
+
+        verify(messageService, times(1)).sendCard(anyString(), anyString());
+        assertEquals(threads, results.size());
+        int done = 0;
+        for (DispatchResult r : results) {
+            if (r.getOutcome() == DispatchResult.Outcome.DONE) {
+                done++;
+            }
+            assertTrue(r.getOutcome() == DispatchResult.Outcome.DONE
+                            || r.getOutcome() == DispatchResult.Outcome.IGNORED
+                            || r.getOutcome() == DispatchResult.Outcome.IN_FLIGHT,
+                    "不该出现其它结论：" + r.getOutcome());
+        }
+        assertEquals(1, done, "只能有一个线程真正处理，其余必须判成处理中或已完成");
     }
 
     /** 只保留判断要用到的字段，跟真实报文结构一致（新版：local_id + target_project_id） */
