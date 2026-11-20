@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;
 
@@ -84,10 +85,19 @@ public class FlowWebhookController {
             @RequestParam(value = "author", defaultValue = "") String author,
             @RequestParam(value = "title", defaultValue = "") String title,
             @RequestParam(value = "runNo", defaultValue = "") String runNo,
-            @RequestHeader HttpHeaders headers) {
+            @RequestHeader HttpHeaders headers,
+            HttpServletRequest request) {
+
+        // 和代码库入口一样，**先留档再验签**：流水线那边是 `|| true`，
+        // 一旦 403，它不会报任何错、也不会重试，如果这里不留一条记录，
+        // 现象就是"流水线绿着、群里没卡片、日志里什么都没有"——最难查的那种。
+        log.info("收到流水线触发 from={} repo={} branch={} -> {} runNo={} title={}",
+                request.getRemoteAddr(), repoName, sourceBranch, targetBranch, runNo, title);
 
         // 和代码库入口共用同一套取头规则（认 X-Codeup-Token 和 X-Gitlab-Token）
         if (!guard.pass(guard.tokenOf(headers))) {
+            log.warn("流水线触发被拒绝：密钥不匹配（来源 {}，repo={} branch={}）",
+                    request.getRemoteAddr(), repoName, sourceBranch);
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body("forbidden");
         }
 
@@ -134,12 +144,22 @@ public class FlowWebhookController {
             return ResponseEntity.ok("dup");
         }
 
-        MrView mr = yunxiaoClient.getChangeRequest(repoId, localId);
-        List<CommitItem> commits = yunxiaoClient.commitsFor(repoId,
-                mr.getSourceBranch(), mr.getTargetBranch());
-        String card = cardFactory.approvalCard(repoName, repoId, localId, mr, commits,
-                yunxiaoClient.webUrlFor(repoName, localId, mr));
-        String messageId = messageService.sendCard(feishuProps.getChatId(), card);
+        MrView mr;
+        String messageId;
+        try {
+            mr = yunxiaoClient.getChangeRequest(repoId, localId);
+            List<CommitItem> commits = yunxiaoClient.commitsFor(repoId,
+                    mr.getSourceBranch(), mr.getTargetBranch());
+            String card = cardFactory.approvalCard(repoName, repoId, localId, mr, commits,
+                    yunxiaoClient.webUrlFor(repoName, localId, mr));
+            messageId = messageService.sendCard(feishuProps.getChatId(), card);
+        } catch (RuntimeException e) {
+            // 卡片没发出去就必须撤掉名额，否则流水线下一次 push（几秒后就可能发生）
+            // 会被自己这一次的登记挡成"已通知过"，静默跳过——而外面回的是 200，
+            // 流水线看起来完全正常。这和卡片按钮那条链的"失败必须 forget"是同一条规矩。
+            idempotent.forget(key);
+            throw e;
+        }
         log.info("流水线触发 -> 已推卡片 repo={} mr={} branch={} messageId={}",
                 repoId, localId, sourceBranch, messageId);
         return ResponseEntity.ok("ok");

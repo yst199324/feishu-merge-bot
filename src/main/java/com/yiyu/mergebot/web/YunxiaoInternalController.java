@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yiyu.mergebot.support.WebhookGuard;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -50,6 +51,10 @@ public class YunxiaoInternalController {
     private final WebhookGuard guard;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    /** 是否把报文原文打进日志。和云效入口共用同一个开关，默认开 */
+    @Value("${mergebot.log-webhook-raw:true}")
+    private boolean logRawWebhook;
+
     public YunxiaoInternalController(WebhookDispatchService dispatchService, WebhookGuard guard) {
         this.dispatchService = dispatchService;
         this.guard = guard;
@@ -84,6 +89,11 @@ public class YunxiaoInternalController {
                 raw.length(),
                 headerOr(headers, "X-Codeup-Event", "（未带事件头）"),
                 StringUtils.hasText(deliveryId) ? deliveryId : "（没带投递编号）");
+        // 正文原样再记一份：监听服务那边也有一份，这里记的是"本服务实际收到了什么"。
+        // 手工重放（README 里那个 curl）时只有这条能对上；两边的日志时间差还能看出转发延迟。
+        if (logRawWebhook && StringUtils.hasText(raw)) {
+            log.info("监听服务转发原文:\n{}", raw);
+        }
 
         // 缺投递编号时 dispatch 会判成"永久失败"，回 400：
         // 队列那边直接进死信，不用白等六次重试
