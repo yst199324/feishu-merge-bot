@@ -19,3 +19,6 @@ deploy/.env
 # 本地开发的真实配置，不入库。模板见 .env.example
 # 只忽略根目录那个 .env，不影响 .env.example
 /.env
+
+# 设计与方案文档只在本地留存，不推到公开仓库
+docs/
