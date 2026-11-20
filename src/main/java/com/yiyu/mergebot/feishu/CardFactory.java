@@ -99,17 +99,17 @@ public class CardFactory {
         // 链接和最近提交会跟着按钮值带下去，给结果卡透传。
         elements.add(actionButtons(repoName, repoId, localId, mr, commitLine, url));
 
-        // 云效按钮 + 底部一行灰字链接。
+        // 云效链接区：一行两个按钮（主操作「在云效打开」+ 窄一号的「复制」），
+        // 下面再留一行灰字原文，想直接看到完整地址的人不用点。
         //
-        // 为什么不把 URL 单列一行放在正文：太占地方，而且大部分时候没人看。
-        // 但也不能完全去掉——按钮上的文字拿不到，留一行原文至少能看清这条请求在哪个仓库。
+        // 为什么不把 URL 单列一行放在正文而放在最底部：太占地方，大部分时候没人看。
         //
         // 注意：**手机端长按卡片不会选中文字**，弹出的是消息菜单（转发/复制消息链接/置顶），
         // 「复制消息链接」拿到的是 applink.feishu.cn 的飞书消息链接，不是这里这串云效地址。
-        // 所以灰字不能写"长按可复制"——复制只能点开浏览器后从地址栏复制。
-        // 早期版本就是写错了这句提示，用户照着长按，复制出来的是一条飞书链接。
+        // 所以灰字不能写"长按可复制"——早期版本就写错了这句，用户照着长按，复制出来的是一条飞书链接。
+        // 真正能复制的是**文本消息**，所以「复制」做成按钮：点了由机器人私聊发一条只有链接的纯文本。
         if (!url.isEmpty()) {
-            elements.add(linkButton("在云效打开", "default", url));
+            elements.add(linkRow("在云效打开", url, copyValue(repoName, url)));
         }
 
         elements.add(markdown("<font color='grey'>机器人自动检查：冲突 "
@@ -275,8 +275,9 @@ public class CardFactory {
      *  2. **已合并绿、已拒绝灰、失败红**。拒绝是正常决策不是异常，不能用黄/红；
      *  3. **正文第一行是结果**（加粗+着色），紧跟着是完整标题——
      *     header 里的标题会被截断到 24 字，正文这条给全的；
-     *  4. **URL 只出现在底部灰字里**，不占正文版面；点一下在浏览器打开
-     *     （手机端长按卡片是消息菜单，复制不到这串地址，所以不写"长按可复制"）。
+     *  4. **链接不占正文版面**：底部一行「去云效查看」+ 小号「复制」，再跟一行灰字原文。
+     *     灰字后面不能写"长按可复制"——手机端长按卡片是消息菜单，复制到的是飞书链接，
+     *     真要复制得点「复制」，由机器人私聊发一条纯文本。
      *
      * @param kind   这次是什么结果，决定头部文字和颜色
      * @param message 结果说明，如「已合并进 test」
@@ -317,7 +318,9 @@ public class CardFactory {
 
         String url = blank(detailUrl, mr == null ? "" : blank(mr.getDetailUrl(), ""));
         if (!url.isEmpty()) {
-            elements.add(linkButton("去云效查看", "default", url));
+            // 结果卡和待审批卡用同一套按钮行：打开 + 复制。
+            // 结果卡虽然不能再操作了，但"把链接捞到电脑上看"这个需求一样有
+            elements.add(linkRow("去云效查看", url, copyValue(repoName, url)));
             elements.add(markdown("<font color='grey'>云效链接（点一下在浏览器打开）：" + esc(url) + "</font>"));
         }
 
@@ -515,6 +518,67 @@ public class CardFactory {
         set.put("horizontal_spacing", "8px");
         set.put("columns", Arrays.asList(col1, col2));
         return set;
+    }
+
+    /**
+     * 卡片底部那一行：左边「在云效打开」占大部分宽度，右边一个窄一号的「复制」。
+     *
+     * 为什么「复制」要做成按钮：卡片正文的文字在手机端**不可选中**，长按弹的是消息菜单，
+     * 「复制消息链接」拿到的是一条 applink.feishu.cn 的飞书链接，不是云效地址。
+     * 唯一能真正复制出原文的是普通文本消息，所以按钮点了之后由机器人私聊发一条纯文本。
+     *
+     * 尺寸上刻意压小（分栏权重 3:1 + size=small）：
+     * 打开云效才是主操作，复制只是"顺手把链接捞到电脑上"的辅助动作，不该和主按钮一样抢眼。
+     */
+    private Map<String, Object> linkRow(String linkText, String url, Map<String, Object> copyValue) {
+        Map<String, Object> open = linkButton(linkText, "default", url);
+        Map<String, Object> copy = button("复制", "default", copyValue);
+        copy.put("size", "small");
+        return weightedRow(open, 3, copy, 1);
+    }
+
+    /**
+     * 按权重分栏的一行。
+     *
+     * 关键点：`weight` **只在 column 的 width 为 weighted 时才生效**，
+     * 写成 width=auto 配 weight 是无效的（飞书不会报错，只是白写）。
+     */
+    private Map<String, Object> weightedRow(Map<String, Object> left, int leftWeight,
+                                            Map<String, Object> right, int rightWeight) {
+        Map<String, Object> col1 = column(left, leftWeight);
+        Map<String, Object> col2 = column(right, rightWeight);
+
+        Map<String, Object> set = new LinkedHashMap<>();
+        set.put("tag", "column_set");
+        // 用 none 而不是 bisect：bisect 是二等分，会把小按钮撑成和主按钮一样宽
+        set.put("flex_mode", "none");
+        set.put("horizontal_spacing", "8px");
+        set.put("columns", Arrays.asList(col1, col2));
+        return set;
+    }
+
+    private Map<String, Object> column(Map<String, Object> element, int weight) {
+        Map<String, Object> col = new LinkedHashMap<>();
+        col.put("tag", "column");
+        col.put("width", "weighted");
+        col.put("weight", weight);
+        col.put("vertical_align", "center");
+        col.put("elements", Arrays.asList(element));
+        return col;
+    }
+
+    /**
+     * 「复制」按钮的回传值。
+     *
+     * 只带链接和项目名，**不带仓库编号和请求编号**：复制是只读动作，
+     * 不需要这两个参数也能完成；少带两个字段，卡片被转发到别的群也照样能用。
+     */
+    private Map<String, Object> copyValue(String repoName, String url) {
+        Map<String, Object> v = new LinkedHashMap<>();
+        v.put("act", "copy");
+        v.put("url", url == null ? "" : url);
+        v.put("name", repoName == null ? "" : repoName);
+        return v;
     }
 
     /** 回调按钮：点击后把 value 回传给服务端 */

@@ -146,6 +146,44 @@ public class FeishuMessageService {
         }
     }
 
+    /**
+     * 给**某个人**发一条纯文本（私聊）。
+     *
+     * 和 {@link #sendText} 只差 receiveIdType：那个往群里发（chat_id），这个往人发（open_id）。
+     *
+     * 为什么返回成功与否：调用方要据此弹不同的提示。发失败却提示"已复制"，
+     * 比干脆不提示更糟——用户会去私聊里找一个根本没有的会话。
+     *
+     * 失败的常见原因：应用可用范围不包含这个人、或对方从没和机器人建立过会话。
+     * 这些都属于"换个方式也能拿到链接"，所以只记 warn 不抛异常。
+     */
+    public boolean sendTextToUser(String openId, String text) {
+        if (!StringUtils.hasText(openId) || !StringUtils.hasText(text)) {
+            return false;
+        }
+        try {
+            Map<String, String> payload = new HashMap<>();
+            payload.put("text", text);
+            CreateMessageReq req = CreateMessageReq.newBuilder()
+                    .receiveIdType("open_id")
+                    .createMessageReqBody(CreateMessageReqBody.newBuilder()
+                            .receiveId(openId)
+                            .msgType("text")
+                            .content(mapper.writeValueAsString(payload))
+                            .build())
+                    .build();
+            CreateMessageResp resp = client.im().message().create(req);
+            if (!resp.success()) {
+                log.warn("私聊发文本失败 openId={} code={} msg={}", openId, resp.getCode(), resp.getMsg());
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            log.warn("私聊发文本异常 openId={}：{}", openId, e.getMessage());
+            return false;
+        }
+    }
+
     /** 机器人所在的群列表，用来查 chat_id */
     public ListChatResp listChats() throws Exception {
         ListChatResp resp = client.im().chat().list(ListChatReq.newBuilder().pageSize(50).build());

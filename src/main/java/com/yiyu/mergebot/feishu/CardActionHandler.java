@@ -37,6 +37,9 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * ⚠️ 第 3 层一定在第 4 层之前。反过来的话，拿锁失败也会消耗幂等名额，
  * 用户按提示再点一次就会被误判成"重复请求"，而实际一次都没执行。
+ *
+ * 例外只有一个：**「复制」** 是只读动作（把卡片上的链接私发回点击人），
+ * 在分发表里提前返回，不走 2~4 层。它不改云效任何数据，重复点也只是再发一条私聊。
  */
 @Slf4j
 @Component
@@ -108,6 +111,14 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             audit.step("收到点击", "act=" + act + " openId=" + tail6(openId)
                     + " 项目=" + repoName + " mr=" + localId + " 消息=" + messageId);
 
+            // 「复制」只把卡片上已有的链接私发回点击人：不改任何数据、也不需要仓库和请求编号，
+            // 所以提前分出去，不走人员/参数校验——卡片被转发出去之后，
+            // 谁点都只是拿到他自己屏幕上就能看到的那个地址，和读卡片同等权限。
+            // 合并、拒绝这些写操作一个都不放过 checkClickable。
+            if ("copy".equals(act)) {
+                return copyLink(resp, audit, openId);
+            }
+
             if (!checkClickable(audit, resp, openId, act, repoId, localId)) {
                 return resp;   // 不通过的原因已经写进 toast、日志和审计
             }
@@ -166,6 +177,46 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             return false;
         }
         return true;
+    }
+
+    /**
+     * 点「复制」：把云效链接**私聊**发给点的人。
+     *
+     * 为什么要绕这一圈，而不是在卡片上直接复制：卡片里的文字在手机端不可选中，
+     * 长按弹出的是消息菜单，「复制消息链接」复制到的是 applink.feishu.cn 的飞书链接，
+     * 不是云效地址。唯一能真正复制出原文的是普通文本消息，所以由机器人发一条。
+     *
+     * 三个说法上的取舍：
+     *  - **发私聊不发群里**：群里发会刷屏，链接别人也未必想要一份；
+     *  - **只发链接本身**：文本消息是整条复制的，带上标题就会连标题一起抄走；
+     *  - **不改卡片**：复制是只读动作，卡片保持原样，群里其他人看到的还是那张待审批卡。
+     */
+    private P2CardActionTriggerResponse copyLink(P2CardActionTriggerResponse resp, AuditEntry audit,
+                                                 String openId) {
+        if (!StringUtils.hasText(openId)) {
+            audit.stepFail("复制链接", "回调里没有操作人的 open_id");
+            auditLog.write(audit.result("未执行", "拿不到操作人 open_id，没法私聊"));
+            resp.setToast(toast("error", "识别不出点击人，没法私聊发给你"));
+            return resp;
+        }
+        String url = audit.getWebUrl();
+        if (!StringUtils.hasText(url)) {
+            audit.stepFail("复制链接", "这张卡片上没有云效链接");
+            auditLog.write(audit.result("未执行", "卡片上没有云效链接（老卡片，或云效没返回链接）"));
+            resp.setToast(toast("warning", "这张卡片上没有链接，去云效里打开吧"));
+            return resp;
+        }
+        if (!messageService.sendTextToUser(openId, url)) {
+            audit.stepFail("复制链接", "私聊发文本失败 openId=" + tail6(openId));
+            auditLog.write(audit.result("失败", "私聊发链接失败：机器人可能发不了这个人的私聊"));
+            resp.setToast(toast("error", "私聊发送失败，可先点左边按钮打开，再从浏览器地址栏复制"));
+            return resp;
+        }
+        audit.step("复制链接", "已私聊发给 openId=" + tail6(openId));
+        // 成功也记一条：以后要查"谁什么时候拿走过这个链接"，日志里有据
+        auditLog.write(audit.result("已复制", "链接已私聊发给点击人"));
+        resp.setToast(toast("success", "已发到私聊，长按那条消息即可复制"));
+        return resp;
     }
 
     /** 点「合并」：只弹确认卡，一行代码都不动。合并是不可逆动作，必须再确认一次 */
