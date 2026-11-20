@@ -82,7 +82,12 @@ class YunxiaoInternalControllerTest {
         when(dispatchService.dispatch(anyString(), anyString()))
                 .thenReturn(DispatchResult.inFlight("处理中：这条投递还在处理"));
 
-        assertEquals(HttpStatus.SERVICE_UNAVAILABLE.value(), call().getStatusCodeValue());
+        ResponseEntity<String> resp = call();
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE.value(), resp.getStatusCodeValue());
+        // 监听服务靠响应体里的 IN_FLIGHT 把"处理中撞车"和"云效真挂了"分开记日志，
+        // 所以这个字段是**跨工程契约**，不能改名、不能挪出前 300 字符
+        assertTrue(resp.getBody().contains("\"outcome\":\"IN_FLIGHT\""), resp.getBody());
     }
 
     @Test
