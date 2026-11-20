@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -114,12 +115,13 @@ public class YunxiaoClient {
      */
     public String probeRepository(String repoId) {
         if (!StringUtils.hasText(repoId)) {
-            throw new YunxiaoException("仓库编号是空的");
+            throw new YunxiaoException(YunxiaoException.Kind.OTHER, "仓库编号是空的");
         }
         JsonNode data = call(HttpMethod.GET, base(repoId), null);
         String name = stripOrgPrefix(firstText(data, "pathWithNamespace", "path_with_namespace", "name"));
         if (!StringUtils.hasText(name)) {
-            throw new YunxiaoException("接口通了但返回里没有仓库名，编号可能写错了");
+            throw new YunxiaoException(YunxiaoException.Kind.OTHER,
+                    "接口通了但返回里没有仓库名，编号可能写错了");
         }
         return name;
     }
@@ -350,8 +352,7 @@ public class YunxiaoClient {
             log.info("云效原文 GET {} -> {} 字节", url, body == null ? 0 : body.length());
             return body;
         } catch (HttpStatusCodeException e) {
-            throw new YunxiaoException("云效接口失败 HTTP " + e.getRawStatusCode()
-                    + "，" + e.getResponseBodyAsString(), e);
+            throw httpFailure(e);
         }
     }
 
@@ -460,7 +461,7 @@ public class YunxiaoClient {
      */
     private String safeSegment(String value, String what) {
         if (!StringUtils.hasText(value) || !value.matches("[A-Za-z0-9_-]+")) {
-            throw new YunxiaoException(what + "不合法，已拒绝：" + value);
+            throw new YunxiaoException(YunxiaoException.Kind.OTHER, what + "不合法，已拒绝：" + value);
         }
         return value;
     }
@@ -486,13 +487,13 @@ public class YunxiaoClient {
         try {
             raw = rest.exchange(url, method, entity, String.class).getBody();
         } catch (HttpStatusCodeException e) {
-            throw new YunxiaoException("云效接口失败 HTTP " + e.getRawStatusCode()
-                    + "，" + e.getResponseBodyAsString(), e);
+            throw httpFailure(e);
         } catch (RestClientException e) {
             // 连接超时、读超时、DNS 失败、连接被重置都走这里。
-            // 不包装的话会冒泡成一句笼统的"处理失败"，调用方既不知道是网络问题，
-            // 也没法判断"可以重试"（按钮那边会据此撤销幂等登记）。
-            throw new YunxiaoException("云效接口调用失败（网络或超时）：" + e.getMessage(), e);
+            // 归"服务不可用"：这类问题过一会儿重试往往就好了，
+            // 卡片那边据此保留原卡片、内部入口据此返回 503 让队列重试。
+            throw new YunxiaoException(YunxiaoException.Kind.SERVICE_UNAVAILABLE,
+                    "云效接口调用失败（网络或超时）：" + e.getMessage(), e);
         }
         // 只记长度，不记响应全文。
         // 响应里有提交人姓名、邮箱、合并请求说明，属于个人信息；
@@ -513,7 +514,8 @@ public class YunxiaoClient {
         try {
             JsonNode node = mapper.readTree(raw);
             if (node.has("success") && !node.path("success").asBoolean(true)) {
-                throw new YunxiaoException("云效返回失败：" + raw);
+                // 接口本身通了，是云效拒绝了这个操作（业务拒绝），不是网络问题
+                throw new YunxiaoException(YunxiaoException.Kind.OTHER, "云效返回失败：" + raw);
             }
             JsonNode data = node.get("data");
             if (data != null && !data.isNull()) {
@@ -521,7 +523,42 @@ public class YunxiaoClient {
             }
             return node;
         } catch (IOException e) {
-            throw new YunxiaoException("云效返回内容无法解析：" + raw, e);
+            // 网关挂了时常见这种：返回体是一段 HTML 错误页而不是 JSON。
+            // 归"服务不可用"，因为换一次请求就可能好
+            throw new YunxiaoException(YunxiaoException.Kind.SERVICE_UNAVAILABLE,
+                    "云效返回内容无法解析：" + raw, e);
         }
+    }
+
+    /**
+     * 把 HTTP 层失败包成带类别的异常。
+     *
+     * 放在一处做，是因为状态码只有这里拿得到；散在几个 catch 里各写一套，
+     * 迟早出现"一处给了类别、另一处忘了"，而忘了的那处表现成"偶发不可重试"。
+     */
+    private YunxiaoException httpFailure(HttpStatusCodeException e) {
+        int status = e.getRawStatusCode();
+        return new YunxiaoException(kindOfStatus(status), status,
+                "云效接口失败 HTTP " + status + "，" + e.getResponseBodyAsString(), e);
+    }
+
+    /**
+     * 按状态码定类别。
+     *
+     * 401/403 是令牌问题：令牌不会自己变好，重试无用，得人去换。
+     * 502/503/504 是网关或后端临时不可用：等一会儿再试就有意义。
+     * 其余（400 参数错、404 不存在、409 冲突）是业务拒绝：重试同样无用，
+     * 但也不该被当成"网络抖动"，所以归"其他"而不是"服务不可用"。
+     */
+    private static YunxiaoException.Kind kindOfStatus(int status) {
+        if (status == HttpStatus.UNAUTHORIZED.value() || status == HttpStatus.FORBIDDEN.value()) {
+            return YunxiaoException.Kind.AUTH;
+        }
+        if (status == HttpStatus.BAD_GATEWAY.value()
+                || status == HttpStatus.SERVICE_UNAVAILABLE.value()
+                || status == HttpStatus.GATEWAY_TIMEOUT.value()) {
+            return YunxiaoException.Kind.SERVICE_UNAVAILABLE;
+        }
+        return YunxiaoException.Kind.OTHER;
     }
 }

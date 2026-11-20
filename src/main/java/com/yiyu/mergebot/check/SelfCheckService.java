@@ -17,6 +17,7 @@ import com.yiyu.mergebot.yunxiao.YunxiaoException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -73,6 +74,8 @@ public class SelfCheckService {
 
     private final String serverPort;
     private final String serverAddress;
+    /** 内部入口开关的当前值。只报事实，见 21 项的注释 */
+    private final boolean internalEndpointEnabled;
 
     public SelfCheckService(YunxiaoClient yunxiao,
                             YunxiaoProperties yunxiaoProps,
@@ -82,6 +85,7 @@ public class SelfCheckService {
                             FeishuWsRunner wsRunner,
                             WebhookDebugStore debugStore,
                             CardFactory cardFactory,
+                            @Value("${mergebot.internal-endpoint-enabled:false}") boolean internalEndpointEnabled,
                             @Value("${server.port:8080}") String serverPort,
                             @Value("${server.address:}") String serverAddress) {
         this.yunxiao = yunxiao;
@@ -92,6 +96,7 @@ public class SelfCheckService {
         this.wsRunner = wsRunner;
         this.debugStore = debugStore;
         this.cardFactory = cardFactory;
+        this.internalEndpointEnabled = internalEndpointEnabled;
         this.serverPort = serverPort;
         this.serverAddress = serverAddress;
     }
@@ -231,6 +236,28 @@ public class SelfCheckService {
         return items;
     }
 
+    /**
+     * 「内部入口开关」这一项（排在全部检查的最后，也就是第 21 项）。
+     *
+     * 开 = 通过；关 = **警告**而不是失败（设计文档 14.8 的定案）。
+     *
+     * 为什么只报当前值、不猜部署形态：合并项目根本无从知道监听服务有没有部署，
+     * 更不知道它是不是在同一台机器上。说"关着就是错的"会在"只部署合并项目"
+     * 这个默认形态下天天误报，那样这份报告很快没人看。
+     * 真正能确定"形态二 + 忘了打开开关"的是监听服务那一侧（启动探测 + /health），
+     * 这里只负责让人上线验收时看见这个开关的实际状态。
+     */
+    private Result internalEndpointResult() {
+        if (internalEndpointEnabled) {
+            return pass("内部入口开关", "已开启，监听服务可以转发过来（/internal/yunxiao 已注册）");
+        }
+        return warn("内部入口开关",
+                "当前关闭。只部署合并项目时正常；若已部署监听服务，请在 .env 设 INTERNAL_ENDPOINT=true 并重启",
+                "关着时 /internal/yunxiao 不注册，监听服务转发过来会拿到 404、消息直接进死信。"
+                        + "要切到「两个都部署」的形态：先停服务，在 .env 里加 INTERNAL_ENDPOINT=true"
+                        + " 并把 SERVER_PORT 改成 18601，再启动");
+    }
+
     // ================================================================ 二、云效
 
     private List<Result> checkYunxiao() {
@@ -247,7 +274,7 @@ public class SelfCheckService {
             canReadRepo = true;
             items.add(pass("令牌有效、能读代码库", "看到 " + repos.size() + " 个代码库"));
         } catch (YunxiaoException e) {
-            items.add(tokenFailure(e.getMessage()));
+            items.add(tokenFailure(e));
         } catch (Exception e) {
             items.add(fail("令牌有效、能读代码库", e.getMessage(),
                     "先确认服务器能访问 " + yunxiaoProps.getDomain() + "（防火墙、DNS）"));
@@ -269,7 +296,7 @@ public class SelfCheckService {
                 // 这里吞掉所有异常，不只 YunxiaoException：漏出去一个空指针，
                 // 整组会被 safeGroup 换成一条"这组出错了"，后面的仓库校验和写权限
                 // 两项就直接从报告里消失，人被指向一个不存在的 bug
-                items.add(repoFailure("能读合并请求", repoId, e.getMessage()));
+                items.add(repoFailure("能读合并请求", repoId, e));
             }
         }
 
@@ -292,25 +319,34 @@ public class SelfCheckService {
         return items;
     }
 
-    /** 把云效失败的原文翻译成"该去改什么" */
-    private Result tokenFailure(String raw) {
-        String msg = raw == null ? "" : raw;
-        if (msg.contains("HTTP 401")) {
+    /**
+     * 把云效失败翻译成"该去改什么"。
+     *
+     * 判定依据是异常带来的 HTTP 状态码，**不再去 message 里找 "HTTP 401"**：
+     * 字符串匹配要求云效的错误文案一个字都不能变，而且别处（卡片操作那一路）
+     * 已经改成看状态码了，留两套标准迟早分叉——到时候自检说"令牌好的"、
+     * 点按钮却提示"令牌失效"，人只能两边都不信。
+     */
+    private Result tokenFailure(YunxiaoException e) {
+        String msg = e.getMessage() == null ? "" : e.getMessage();
+        int status = e.getHttpStatus();
+        if (status == HttpStatus.UNAUTHORIZED.value()) {
             return fail("令牌有效、能读代码库", "401：令牌无效或已过期",
                     "云效个人访问令牌默认 7 天过期。去云效 → 右上角头像 → 个人设置 → "
                             + "个人访问令牌，看这条是不是已过期，重新生成后填进 yunxiao.token 并重启");
         }
-        if (msg.contains("HTTP 403")) {
+        if (status == HttpStatus.FORBIDDEN.value()) {
             return fail("令牌有效、能读代码库", "403：令牌有效，但少了代码仓库的读权限",
                     "去云效 → 头像 → 个人设置 → 个人访问令牌 → 编辑这条令牌，勾上"
                             + "「代码管理 → 代码仓库 → 只读」和「代码管理 → 合并请求 → 读+写」。"
                             + "令牌值不变，改完立即生效，不用重启");
         }
-        if (msg.contains("HTTP 404")) {
+        if (status == HttpStatus.NOT_FOUND.value()) {
             return fail("令牌有效、能读代码库", "404：接口地址不对",
                     "检查 yunxiao.domain 是不是 https://openapi-rdc.aliyuncs.com，"
                             + "以及 org-id 是否填了组织 ID（中心版必须带）");
         }
+        // 不是 HTTP 层失败（网络不通、返回内容解析不了）或状态码没带上来：原样展示
         return fail("令牌有效、能读代码库", msg,
                 "先确认服务器能访问 " + yunxiaoProps.getDomain() + "（防火墙、DNS、代理）");
     }
@@ -328,15 +364,14 @@ public class SelfCheckService {
             try {
                 ok.append(id).append("=").append(yunxiao.probeRepository(id)).append("  ");
             } catch (Exception e) {
-                String msg = e.getMessage() == null ? "" : e.getMessage();
-                if (isNetworkFailure(msg)) {
+                if (isNetworkFailure(e)) {
                     // 第一个仓库就超时，说明是整体网络不通。接着探剩下几个只会再各等
                     // 20 秒（读超时），把浏览器一路拖到网关超时（Nginx 默认 60 秒），
                     // 用户看到的是 504 而不是这份报告 —— 那等于自检自己废掉了。
-                    networkDown = msg;
+                    networkDown = e.getMessage();
                     break;
                 }
-                bad.add(id + "（" + shortReason(msg) + "）");
+                bad.add(id + "（" + shortReason(e) + "）");
             }
         }
 
@@ -355,22 +390,37 @@ public class SelfCheckService {
                         + "返回里的 repoId 就是。注意新版云效页面的地址栏已经不带仓库编号了");
     }
 
-    /** 连不上、超时、DNS 失败归这一类；带 HTTP 状态码的是业务失败，不该短路 */
-    private boolean isNetworkFailure(String msg) {
-        return msg.contains("网络或超时");
+    /**
+     * 连不上、超时、DNS 失败归这一类；带 HTTP 状态码的是业务失败，不该短路。
+     *
+     * 看的是异常的类别，不再去 message 里找"网络或超时"四个字——
+     * 那句话是 YunxiaoClient 自己拼的，谁改了措辞这里就静默失效。
+     */
+    private boolean isNetworkFailure(Throwable e) {
+        return e instanceof YunxiaoException && ((YunxiaoException) e).isServiceUnavailable();
     }
 
-    private Result repoFailure(String title, String repoId, String raw) {
-        String msg = raw == null ? "" : raw;
-        if (msg.contains("HTTP 404")) {
+    private Result repoFailure(String title, String repoId, Throwable e) {
+        int status = httpStatusOf(e);
+        String msg = e.getMessage() == null ? "" : e.getMessage();
+        if (status == HttpStatus.NOT_FOUND.value()) {
             return fail(title, "仓库 " + repoId + " 不存在，或者令牌看不到它",
                     "用 /test/repos?name=仓库名 反查正确编号");
         }
-        if (msg.contains("HTTP 403")) {
+        if (status == HttpStatus.FORBIDDEN.value()) {
             return fail(title, "仓库 " + repoId + " 没权限",
                     "去云效个人访问令牌里补「合并请求 读+写」权限");
         }
         return fail(title, "仓库 " + repoId + "：" + msg, "按提示内容排查网络或令牌");
+    }
+
+    /**
+     * 取异常带的 HTTP 状态码；不是云效异常、或失败不在 HTTP 层（网络不通、返回内容解析不了）时返回 0。
+     *
+     * 自检里判断 401/403/404 一律走这里，不再各方法自己 contains 一遍。
+     */
+    private int httpStatusOf(Throwable e) {
+        return e instanceof YunxiaoException ? ((YunxiaoException) e).getHttpStatus() : 0;
     }
 
     // ================================================================ 三、飞书
@@ -623,6 +673,10 @@ public class SelfCheckService {
                 "验收完改成 false 并重启。调的时候只用服务器本机 127.0.0.1，"
                         + "别用公网地址，免得把群 ID 和仓库列表暴露在外面"));
 
+        // 21 内部入口开关。放在最后，是为了不打乱前面各项的编号——
+        // 手册和群里的说法都是"看第几项"，插在中间会让那些说法全部错位
+        items.add(internalEndpointResult());
+
         return items;
     }
 
@@ -796,14 +850,21 @@ public class SelfCheckService {
         return !Texts.isPlaceholder(v);
     }
 
-    private String shortReason(String msg) {
+    /**
+     * 每个仓库一行短结论。一眼能看出"是不存在、没权限，还是别的原因"。
+     *
+     * 和别处一样看状态码，不看 message 里有没有 "HTTP 404"。
+     */
+    private String shortReason(Throwable e) {
+        String msg = e.getMessage() == null ? "" : e.getMessage();
         if (!StringUtils.hasText(msg)) {
             return "查不到";
         }
-        if (msg.contains("HTTP 404")) {
+        int status = httpStatusOf(e);
+        if (status == HttpStatus.NOT_FOUND.value()) {
             return "不存在或没权限";
         }
-        if (msg.contains("HTTP 403")) {
+        if (status == HttpStatus.FORBIDDEN.value()) {
             return "没权限";
         }
         return msg.length() > 40 ? msg.substring(0, 40) + "…" : msg;

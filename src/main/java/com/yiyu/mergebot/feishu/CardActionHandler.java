@@ -17,6 +17,7 @@ import com.yiyu.mergebot.yunxiao.MrView;
 import com.yiyu.mergebot.yunxiao.YunxiaoClient;
 import com.yiyu.mergebot.yunxiao.YunxiaoException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -40,6 +41,11 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * 例外只有一个：**「复制」** 是只读动作（把卡片上的链接私发回点击人），
  * 在分发表里提前返回，不走 2~4 层。它不改云效任何数据，重复点也只是再发一条私聊。
+ *
+ * 另一个必须知道的设计：**云效暂时联系不上时，卡片一个字都不动**（只弹一句提示）。
+ * 以前会换成红色失败卡、按钮消失，服务恢复后那张卡就永久废了，只能去云效手工操作。
+ * 出口统一在 {@link #respondServiceUnavailable}，但只能用"确定什么都没发生"的那几处——
+ * 调过写接口之后的失败必须换卡，否则会出现二次合并（见 doMerge 里的注释）。
  */
 @Slf4j
 @Component
@@ -57,6 +63,15 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
     /** 令牌问题提醒的最小间隔：一小时内只往群里发一次，避免连点几次刷屏 */
     private static final long AUTH_ALERT_INTERVAL_MS = 3600 * 1000L;
     private volatile long lastAuthAlertAt;
+
+    /**
+     * 云效暂时联系不上时的统一提示。
+     *
+     * 措辞要交代三件事，缺一件用户就会重复点：谁出问题了（云效）、这次有没有执行（没有）、
+     * 接下来怎么办（稍等再点）。原来弹的是"处理失败：连接被拒"这类原始报错，
+     * 看着像系统坏了，审批人会跑去云效手工操作。
+     */
+    private static final String SERVICE_UNAVAILABLE_HINT = "云效暂时联系不上，这次没有执行，稍等一会儿再点";
 
     public CardActionHandler(FeishuProperties props,
                              CardFactory cardFactory,
@@ -142,14 +157,22 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                     return resp;
             }
         } catch (Exception e) {
+            // 落到这一层的基本是"点合并 / 点取消"在查详情时失败：这两个动作还没登记幂等，
+            // 也就没有登记要撤，卡片保持原样即可（飞书收到空 card 就不动原卡片）。
+            // 云效暂时联系不上时给统一提示，其余异常保留原始报错——排查时那句原文最有用。
+            boolean unavailable = isServiceUnavailable(e);
             if (audit != null) {
                 audit.stepError("处理回调", rootMessage(e), e);
-                auditLog.write(audit.result("异常", "处理过程中抛异常：" + rootMessage(e)));
+                auditLog.write(audit.result(unavailable ? "未执行" : "异常",
+                        unavailable
+                                ? "云效暂时联系不上，本次没有执行：" + rootMessage(e)
+                                : "处理过程中抛异常：" + rootMessage(e)));
             } else {
                 // 连 AuditEntry 都没建起来就挂了，只能打一条不带 trace 的
                 log.error("处理卡片回调失败（还没建起审计记录就抛异常）", e);
             }
-            resp.setToast(toast("error", "处理失败：" + rootMessage(e)));
+            resp.setToast(toast("error",
+                    unavailable ? SERVICE_UNAVAILABLE_HINT : "处理失败：" + rootMessage(e)));
             return resp;
         }
     }
@@ -278,7 +301,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             // "确认合并结果"失败后想重试的人被自己半小时前的记录挡住。
             // 过期也不会重复合并——后面还有锁和"落笔前重查状态"两层兜底。
             if (!idempotent.firstTime(idemKey, IdempotentStore.CLICK_TTL_MILLIS)) {
-                return alreadyHandled(resp, audit, repoId, localId, true);
+                return alreadyHandled(resp, audit, idemKey, repoId, localId, true);
             }
 
             // 状态层：卡片可能是半小时前发的，落笔前必须重查一次
@@ -306,6 +329,14 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             step = "确认合并结果";
             return finishMerge(resp, audit, repoName, repoId, localId, operator);
         } catch (YunxiaoException e) {
+            // ⚠️ 安全边界（设计文档 7.5），别为了"体验统一"改掉：
+            // 只有"查详情"阶段且是"云效暂时联系不上"时，才允许走"不换卡、可重试"的统一出口——
+            // 那一刻连状态都没读到，可以确定什么都没发生。
+            // 下面所有分支（尤其是"确认合并结果"）都必须换卡：只要调用过写接口（合并、关闭），
+            // 结果就是未知的，留一张还能点的卡片给用户，他再点一次就是二次合并。
+            if ("查详情".equals(step) && e.isServiceUnavailable()) {
+                return respondServiceUnavailable(resp, audit, idemKey, step, e);
+            }
             // 用 step 变量把失败精确归到"哪一步"，比给每段套 try-catch 干净，
             // 也不会出现"查详情失败却记成合并失败"这种把排查带偏的情况
             audit.stepError(step, rootMessage(e), e);
@@ -404,7 +435,7 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             // 和 doMerge 同一套规则：只挡飞书几秒内的回调重推，60 秒后允许重新判断，
             // 到时按云效真实状态给结论（已关闭就是已关闭），不会重复关一次
             if (!idempotent.firstTime(idemKey, IdempotentStore.CLICK_TTL_MILLIS)) {
-                return alreadyHandled(resp, audit, repoId, localId, false);
+                return alreadyHandled(resp, audit, idemKey, repoId, localId, false);
             }
             step = "查详情";
             MrView mr = yunxiao.getChangeRequest(repoId, localId);
@@ -428,6 +459,11 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                     resultUrl(audit, repoName, localId, mr), audit.getLatestCommit()));
             return resp;
         } catch (YunxiaoException e) {
+            // 同 doMerge 的同名分支：查详情失败时什么都没发生，不换卡、可重试。
+            // 调过关闭接口之后一律换卡——那时结果未知（设计文档 7.5）。
+            if ("查详情".equals(step) && e.isServiceUnavailable()) {
+                return respondServiceUnavailable(resp, audit, idemKey, step, e);
+            }
             audit.stepError(step, rootMessage(e), e);
             // 没成功就撤销登记，允许立刻重试
             idempotent.forget(idemKey);
@@ -463,12 +499,26 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
      * 原来这里固定渲染绿色「操作成功」卡（内容是"已经处理过，当前状态 X"），
      * 会让审批人以为合进去了，实际可能上一次根本没执行。
      *
+     * @param idemKey 登记键，重查详情失败时要撤销
      * @param merging true = 这次点的是合并；false = 点的是拒绝
      */
     private P2CardActionTriggerResponse alreadyHandled(P2CardActionTriggerResponse resp, AuditEntry audit,
-                                                       String repoId, String localId,
+                                                       String idemKey, String repoId, String localId,
                                                        boolean merging) throws Exception {
-        MrView mr = safeGet(repoId, localId);
+        MrView mr;
+        try {
+            mr = yunxiao.getChangeRequest(repoId, localId);
+        } catch (YunxiaoException e) {
+            // ⚠️ 这里**不能**退回 safeGet 那样"查不到就给空视图再重画卡片"：
+            // 空视图画出来的是一张没有标题、没有分支的残卡，却把原卡片覆盖掉了，
+            // 等于把一张还能用的卡片弄坏。查不到就什么都不动，等云效恢复。
+            if (e.isServiceUnavailable()) {
+                return respondServiceUnavailable(resp, audit, idemKey, "幂等校验（重查详情）", e);
+            }
+            // 令牌问题这种重试无用的失败，照旧换失败卡并写清原因
+            idempotent.forget(idemKey);
+            return failOnYunxiao(resp, audit, repoId, localId, e);
+        }
         boolean done = merging ? mr.isMerged() : mr.isClosed();
         String operator = audit.getOperator();
         String target = blank(mr.getTargetBranch(), "目标分支");
@@ -529,6 +579,41 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
     }
 
     /**
+     * 云效暂时联系不上时的统一出口：写审计、弹一句提示、**不换卡**、撤掉幂等名额。
+     *
+     * 只做这四件事，一件都不多做：
+     *  1. 审计照写（结果记"未执行"），否则"点了没反应"事后查不出原因；
+     *  2. 提示用统一文案，不再把"连接被拒"这类原始报错甩给审批人；
+     *  3. **不调用 setCard**——飞书收到不带 card 的响应就保留原卡片和按钮，服务恢复后还能接着点。
+     *     这就是整个改造的目的：以前这里会换成红色失败卡、按钮消失，那张卡就永久废了；
+     *  4. 撤掉幂等名额，否则用户"稍等一会儿再点"会被自己 60 秒前的记录挡成"重复请求"。
+     *
+     * ⚠️ 只能在"确定什么都没发生"时用（查详情阶段）。调过写接口之后的失败必须换卡，见 doMerge 里的说明。
+     */
+    private P2CardActionTriggerResponse respondServiceUnavailable(P2CardActionTriggerResponse resp,
+                                                                  AuditEntry audit, String idemKey,
+                                                                  String step, Exception e) {
+        audit.stepError(step, rootMessage(e), e);
+        audit.stepFail("云效不可用", "本次没有执行，卡片保持原样");
+        auditLog.write(audit.result("未执行", "云效暂时联系不上，本次没有执行：" + rootMessage(e)));
+        forgetQuietly(idemKey);
+        resp.setToast(toast("error", SERVICE_UNAVAILABLE_HINT));
+        return resp;
+    }
+
+    /** 撤掉幂等名额。没有键（点合并 / 点取消这两个没登记的动作）就什么都不做 */
+    private void forgetQuietly(String idemKey) {
+        if (StringUtils.hasText(idemKey)) {
+            idempotent.forget(idemKey);
+        }
+    }
+
+    /** 是不是"云效暂时联系不上"。非云效异常（含发飞书卡片失败）一律不算，避免把真故障说成"等会儿再试" */
+    private boolean isServiceUnavailable(Throwable e) {
+        return e instanceof YunxiaoException && ((YunxiaoException) e).isServiceUnavailable();
+    }
+
+    /**
      * 云效接口失败时的统一出口。
      *
      * 令牌失效（401）和权限不足（403）要单独对待：这两种情况**点多少次都不会成功**，
@@ -541,23 +626,18 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
     private P2CardActionTriggerResponse failOnYunxiao(P2CardActionTriggerResponse resp, AuditEntry audit,
                                                       String repoId, String localId,
                                                       YunxiaoException e) throws Exception {
-        String msg = rootMessage(e);
-        if (isAuthError(msg)) {
-            boolean expired = msg.contains("HTTP 401");
-            alertTokenProblem(audit, msg);
-            // 卡片上把 401 和 403 分开写：一个是"令牌没了"，一个是"权限不够"，
-            // 处理动作完全不同（前者要换令牌重启，后者改完权限就好），混成一句话会让人做错事
+        if (e.isAuth()) {
+            // 401 和 403 分开写：一个是"令牌没了"，一个是"权限不够"，
+            // 处理动作完全不同（前者要换令牌重启，后者改完权限就好），混成一句话会让人做错事。
+            // 判断依据是异常带来的状态码，不再去 message 里找 "HTTP 401"
+            boolean expired = e.getHttpStatus() == HttpStatus.UNAUTHORIZED.value();
+            alertTokenProblem(audit, expired);
             return fail(resp, audit, safeGet(repoId, localId), "失败",
                     expired
                             ? "云效令牌已失效（401），这次操作没有执行。群里已发处理步骤"
                             : "云效令牌权限不足（403），这次操作没有执行。群里已发处理步骤");
         }
-        return fail(resp, audit, safeGet(repoId, localId), "失败", "云效返回失败：" + msg);
-    }
-
-    /** 401 / 403 说明是令牌的问题，不是代码或网络的偶发故障 */
-    private boolean isAuthError(String msg) {
-        return msg != null && (msg.contains("HTTP 401") || msg.contains("HTTP 403"));
+        return fail(resp, audit, safeGet(repoId, localId), "失败", "云效返回失败：" + rootMessage(e));
     }
 
     /**
@@ -609,8 +689,12 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
                 : yunxiao.webUrlFor(repoName, localId, mr);
     }
 
-    /** 令牌问题的群提醒。一小时内最多发一次，避免连续点几次刷屏 */
-    private void alertTokenProblem(AuditEntry audit, String detail) {
+    /**
+     * 令牌问题的群提醒。一小时内最多发一次，避免连续点几次刷屏。
+     *
+     * @param expired true = 401 令牌失效，false = 403 权限不足。两种要人做的事完全不同
+     */
+    private void alertTokenProblem(AuditEntry audit, boolean expired) {
         long now = System.currentTimeMillis();
         if (now - lastAuthAlertAt < AUTH_ALERT_INTERVAL_MS) {
             audit.step("令牌提醒", "一小时内已提醒过，本次跳过（避免刷屏）");
@@ -622,7 +706,6 @@ public class CardActionHandler extends P2CardActionTriggerHandler {
             return;
         }
         lastAuthAlertAt = now;
-        boolean expired = detail.contains("HTTP 401");
         String text = expired
                 ? "⚠️ 云效令牌失效了\n\n"
                 + "刚才有人点「合并」或「拒绝」时，云效返回「令牌无效或已过期」，操作没有执行。\n\n"

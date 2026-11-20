@@ -89,7 +89,7 @@ class SelfCheckServiceTest {
         when(wsRunner.isConnected()).thenReturn(true);
 
         service = new SelfCheckService(yunxiao, yunxiaoProps, feishuProps, pollProps,
-                messageService, wsRunner, debugStore, new CardFactory(), "18123", "");
+                messageService, wsRunner, debugStore, new CardFactory(), false, "18123", "");
     }
 
     @Test
@@ -118,8 +118,11 @@ class SelfCheckServiceTest {
     @Test
     @DisplayName("云效 401 指到「令牌过期」，不是权限")
     void yunxiao401() {
+        // 自检现在按异常带的 HTTP 状态码判定（不再去 message 里找 "HTTP 401"），
+        // 所以这里要造一个真的 401：类别 AUTH + 状态码 401
         when(yunxiao.listRepositories(anyString()))
-                .thenThrow(new YunxiaoException("云效接口失败 HTTP 401，{\"error\":\"invalid token\"}"));
+                .thenThrow(new YunxiaoException(YunxiaoException.Kind.AUTH, 401,
+                        "云效接口失败 HTTP 401，{\"error\":\"invalid token\"}", null));
 
         Result item = find(service.run(false), "令牌有效、能读代码库");
 
@@ -133,7 +136,8 @@ class SelfCheckServiceTest {
     @DisplayName("云效 403 指到「令牌缺权限」，不是令牌过期")
     void yunxiao403() {
         when(yunxiao.listRepositories(anyString()))
-                .thenThrow(new YunxiaoException("云效接口失败 HTTP 403，Current token has no permission"));
+                .thenThrow(new YunxiaoException(YunxiaoException.Kind.AUTH, 403,
+                        "云效接口失败 HTTP 403，Current token has no permission", null));
 
         Result item = find(service.run(false), "令牌有效、能读代码库");
 
@@ -318,6 +322,26 @@ class SelfCheckServiceTest {
         // 空的
         assertNull(SelfCheckService.jarFromClasspath(""));
         assertNull(SelfCheckService.jarFromClasspath(null));
+    }
+
+    @Test
+    @DisplayName("内部入口关着：只给警告并写清怎么打开，不能报失败——默认形态下关着是对的")
+    void internalEndpointOffIsWarning() {
+        Result item = find(service.run(false), "内部入口开关");
+
+        assertEquals(Level.WARN, item.getLevel(), "默认形态下关着是对的，报失败会天天误报");
+        assertTrue(item.getDetail().contains("INTERNAL_ENDPOINT=true"), item.getDetail());
+        // 手册按编号说话（"看第 21 项"），插到中间会让已有编号全部错位
+        assertEquals("21", item.getNo(), "这一项必须留在最后，编号 21");
+    }
+
+    @Test
+    @DisplayName("内部入口开着：通过")
+    void internalEndpointOnIsPass() {
+        SelfCheckService enabled = new SelfCheckService(yunxiao, yunxiaoProps, feishuProps, pollProps,
+                messageService, wsRunner, debugStore, new CardFactory(), true, "18601", "");
+
+        assertEquals(Level.PASS, find(enabled.run(false), "内部入口开关").getLevel());
     }
 
     // ---------------------------------------------------------------- 工具

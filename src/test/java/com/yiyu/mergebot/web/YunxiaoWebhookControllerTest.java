@@ -20,7 +20,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -47,6 +46,8 @@ class YunxiaoWebhookControllerTest {
     private static final String DELIVERY = "83fd7702-a9d1-46ca-9c05-058bcb084b89";
 
     private FeishuMessageService messageService;
+    private WebhookDispatchService dispatchService;
+    private WebhookGuard guard;
     private YunxiaoWebhookController controller;
 
     @BeforeEach
@@ -70,10 +71,29 @@ class YunxiaoWebhookControllerTest {
         messageService = mock(FeishuMessageService.class);
         when(messageService.sendCard(anyString(), anyString())).thenReturn("om_test");
 
-        controller = new YunxiaoWebhookController(feishuProps, client, cardFactory, messageService,
-                new WebhookGuard(yunxiaoProps), new IdempotentStore(), new WebhookDebugStore());
+        // 业务逻辑已经搬到共用服务里，两个入口（云效直连 / 监听服务转发）共用同一份
+        dispatchService = new WebhookDispatchService(feishuProps, client, cardFactory, messageService,
+                new IdempotentStore());
         // 配置文件里的默认值就是 true，测试环境不走 Spring 容器，手动置上
-        ReflectionTestUtils.setField(controller, "usePayloadCommit", true);
+        ReflectionTestUtils.setField(dispatchService, "usePayloadCommit", true);
+
+        guard = new WebhookGuard(yunxiaoProps);
+        controller = new YunxiaoWebhookController(guard, dispatchService, new WebhookDebugStore());
+    }
+
+    @Test
+    @DisplayName("同一条投递还在处理中：云效入口回 200（云效不会自动重投，回失败只会多一条假故障记录）")
+    void inFlightIs200OnCloudEntry() {
+        WebhookDispatchService business = mock(WebhookDispatchService.class);
+        when(business.dispatch(anyString(), anyString()))
+                .thenReturn(DispatchResult.inFlight("处理中：这条投递还在处理"));
+        YunxiaoWebhookController cloudController =
+                new YunxiaoWebhookController(guard, business, new WebhookDebugStore());
+
+        ResponseEntity<String> resp = cloudController.onEvent(payload("open"), headers(DELIVERY));
+
+        // 和内部入口的 503 有意不一致：那边要"等一会儿再来"，这边要"别再打扰云效后台"
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
     }
 
     @Test
@@ -159,13 +179,15 @@ class YunxiaoWebhookControllerTest {
     }
 
     @Test
-    @DisplayName("dispatch 收到空编号要立刻炸，不能拼出共用键 yx:dlv:null")
+    @DisplayName("dispatch 收到空编号要判成永久失败，不能拼出共用键 yx:dlv:null")
     void dispatchRejectsBlankDelivery() {
         // 入口已经拦过，正常走不到这里。这条守的是"以后有人新增调用方忘了校验"：
         // String 拼 null 不会报错，只会默默得到 "yx:dlv:null"，
         // 届时所有请求共用一个键，除第一条外全被静默丢弃。
-        assertThrows(IllegalArgumentException.class,
-                () -> ReflectionTestUtils.invokeMethod(controller, "dispatch", payload("open"), null));
+        // 判成"永久失败"而不是可重试：报文里再也不会长出编号来，重投一百次也一样
+        DispatchResult result = dispatchService.dispatch(payload("open"), null);
+
+        assertEquals(DispatchResult.Outcome.PERMANENT_FAIL, result.getOutcome());
         verify(messageService, times(0)).sendCard(anyString(), anyString());
     }
 
